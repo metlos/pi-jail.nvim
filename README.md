@@ -52,6 +52,9 @@ Details:
 
 - **Enter** (`:Pj`, `:Pj ws`): change the working directory into `ws/<name>` first, then open/reuse the workspace's
   agent terminal. `ws/<name>` is a normal terminal buffer; the agent keeps running while you edit in other splits.
+- **Focus-follow**: focusing a workspace terminal's split chdirs back into that workspace (same scope as Enter), so a
+  cwd-bound sidebar always reflects the workspace you are looking at. Focusing the dead-but-kept terminal of an exited
+  agent still follows; focusing away from a terminal never changes the cwd.
 - **New** creates the workspace only: no chdir, no agent start.
 - **Drop** always confirms (`Drop ws/<name>?`). If `pctl drop` reports unlanded work, a second confirm offers `--force`.
   Success and failure are surfaced with `vim.notify` (failure shows pctl's stderr verbatim).
@@ -81,9 +84,9 @@ side. Closing a terminal's split and reopening it later rejoins the column.
 ## Plugin interop
 
 `dir_change_scope = "cd"` (the default) makes cwd-following plugins follow along automatically: the `:cd` fires
-`DirChanged global`, which e.g. a neo-tree sidebar with `bind_to_cwd = true` listens to. Use `"tcd"` if you want other
-tabs to keep their cwd — then configure such plugins to watch the tab scope instead (neo-tree:
-`cwd_target.sidebar = "tab"`).
+`DirChanged global`, which e.g. a neo-tree sidebar with `bind_to_cwd = true` listens to — both when entering a workspace
+and when focusing its terminal. Use `"tcd"` if you want other tabs to keep their cwd — then configure such plugins to
+watch the tab scope instead (neo-tree: `cwd_target.sidebar = "tab"`).
 
 ## Development
 

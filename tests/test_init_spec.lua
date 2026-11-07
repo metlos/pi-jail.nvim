@@ -525,6 +525,16 @@ else
     eq(require("pi-jail.config").get().pctl, "/custom/pctl", "config.setup called with opts")
   end)
 
+  test("setup registers the focus-follow BufEnter autocmd", function()
+    -- given the follow group cleared; when setup runs;
+    pcall(vim.api.nvim_del_augroup_by_name, "pi-jail-follow") -- absent until first setup
+    init.setup({})
+    -- then the group holds exactly one BufEnter autocmd
+    local cmds = vim.api.nvim_get_autocmds({ group = "pi-jail-follow" })
+    eq(#cmds, 1, "setup registered one BufEnter autocmd")
+    eq(cmds[1].event, "BufEnter", "listening on BufEnter")
+  end)
+
   -- Teardown: restore every stubbed boundary.
   project.find_root = saved.find_root
   project.list_workspaces = saved.list_workspaces
