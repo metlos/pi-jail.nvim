@@ -67,10 +67,16 @@ require("pi-jail").setup({
   dir_change_scope = "cd", -- ":cd" (global) or ":tcd" (tab-local) when entering a ws
   terminal = {
     keep_on_exit = true, -- keep the split + buffer around after the agent exits
-    size = 0.4, -- terminal split width as a fraction of &columns
+    size = 0.4, -- terminal column width as a fraction of &columns
   },
 })
 ```
+
+## Terminal layout
+
+The first workspace terminal opens as a right-side vertical split sized by `terminal.size`. Every further terminal opens
+below the bottom-most one, so all terminals stack in a single right-side column of that width instead of tiling side by
+side. Closing a terminal's split and reopening it later rejoins the column.
 
 ## Plugin interop
 

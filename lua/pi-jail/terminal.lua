@@ -6,6 +6,10 @@
 -- workspace name and reused while its job lives; a dead buffer is reused only
 -- when config.terminal.keep_on_exit kept it. chdir'ing into the workspace is
 -- the caller's (init.lua) job; only the terminal lifecycle lives here.
+--
+-- Layout: the first terminal is a right-side vertical split sized by
+-- config.terminal.size; every further terminal splits below an existing
+-- terminal window, so all terminals share one right-side column.
 
 local config = require("pi-jail.config")
 
@@ -30,10 +34,45 @@ local function cleanup(entry)
   M.registry[entry.ws_name] = nil
 end
 
+-- The bottom-most window in this tabpage displaying a registered terminal
+-- buffer; anchors further terminals to the bottom of the terminal column.
+local function column_anchor_win()
+  local term_bufnrs = {}
+  for _, entry in pairs(M.registry) do
+    if vim.api.nvim_buf_is_valid(entry.bufnr) then
+      term_bufnrs[entry.bufnr] = true
+    end
+  end
+  local anchor, anchor_row = nil, -1
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if term_bufnrs[vim.api.nvim_win_get_buf(win)] then
+      local row = vim.fn.win_screenpos(win)[1]
+      if row > anchor_row then
+        anchor, anchor_row = win, row
+      end
+    end
+  end
+  return anchor
+end
+
+local function open_split(bufnr)
+  local width = math.floor(vim.o.columns * config.get().terminal.size)
+  local anchor = column_anchor_win()
+  if anchor == nil then
+    -- First terminal: right-side vertical split, as before.
+    return vim.api.nvim_open_win(bufnr, true, { vertical = true, width = width, split = "right" })
+  end
+  -- Further terminals stack below the column, sharing its width.
+  local win
+  vim.api.nvim_win_call(anchor, function()
+    win = vim.api.nvim_open_win(bufnr, true, { split = "below" })
+  end)
+  return win
+end
+
 local function spawn(ws_name, root, mode)
   local bufnr = vim.api.nvim_create_buf(false, true)
-  local width = math.floor(vim.o.columns * config.get().terminal.size)
-  vim.api.nvim_open_win(bufnr, true, { vertical = true, width = width, split = "right" })
+  vim.api.nvim_set_current_win(open_split(bufnr))
   -- termopen attaches to the current buffer, which is bufnr in its new split.
   -- job_id is pre-declared so the on_exit closure captures the local, not a global.
   local job_id
@@ -70,8 +109,7 @@ function M.open_or_reuse(ws_name, root, mode)
       -- Existing terminal (live, or dead-but-kept): focus (or reopen) its split.
       local wins = vim.fn.win_findbuf(entry.bufnr)
       if #wins == 0 then
-        local width = math.floor(vim.o.columns * config.get().terminal.size)
-        vim.api.nvim_open_win(entry.bufnr, true, { vertical = true, width = width, split = "right" })
+        vim.api.nvim_set_current_win(open_split(entry.bufnr))
       elseif vim.api.nvim_get_current_win() ~= wins[1] then
         vim.api.nvim_set_current_win(wins[1])
       end

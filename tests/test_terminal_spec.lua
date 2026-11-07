@@ -1,5 +1,5 @@
 -- Spec for pi-jail.terminal (+ project.current_ws): per-ws agent terminal,
--- reuse across calls, exit handling, split width.
+-- reuse across calls, exit handling, split width, terminal column stacking.
 -- Signals failure via `vim.cmd("cq")` after counting failures; run.sh greps the exit code.
 
 local failures = 0
@@ -164,6 +164,8 @@ else
 
   local alpha = terminal.open_or_reuse("alpha", root)
   opened[#opened + 1] = alpha
+  local opened_gamma = nil -- set in the width test; column tests read it
+  local opened_zeta = nil -- set in the second-terminal test; third-terminal test reads it
 
   test("open_or_reuse creates a terminal buffer with a live job", function()
     -- given a fresh workspace; when opened; then a terminal buffer with a running job exists
@@ -242,9 +244,56 @@ else
     eq(vim.o.columns, 100, "columns still 100 for the width computation")
     local e = terminal.open_or_reuse("gamma", root)
     opened[#opened + 1] = e
+    opened_gamma = e
     local wins = vim.fn.win_findbuf(e.bufnr)
     eq(#wins, 1, "terminal displayed in exactly one split")
     eq(vim.api.nvim_win_get_width(wins[1]), 40, "width = floor(100 * 0.4 default size)")
+  end)
+
+  test("second terminal opens below the first, same column width", function()
+    -- given gamma's terminal open as a right-side vertical split; when a second
+    -- workspace terminal opens; then it splits below, not into a new vertical
+    local zeta = terminal.open_or_reuse("zeta", root)
+    opened[#opened + 1] = zeta
+    opened_zeta = zeta
+    local gamma_wins = vim.fn.win_findbuf(opened_gamma.bufnr)
+    local zeta_wins = vim.fn.win_findbuf(zeta.bufnr)
+    eq(#zeta_wins, 1, "second terminal displayed in exactly one split")
+    eq(vim.api.nvim_win_get_width(zeta_wins[1]), 40, "second terminal keeps the column width")
+    eq(vim.api.nvim_win_get_width(gamma_wins[1]), 40, "first terminal keeps the column width")
+    ok(
+      vim.fn.win_screenpos(zeta_wins[1])[1] > vim.fn.win_screenpos(gamma_wins[1])[1],
+      "second terminal row below first terminal row"
+    )
+    ok(
+      math.abs(vim.fn.win_screenpos(zeta_wins[1])[2] - vim.fn.win_screenpos(gamma_wins[1])[2]) == 0,
+      "second terminal starts at the same column as the first"
+    )
+  end)
+
+  test("third terminal extends the column below", function()
+    local eta = terminal.open_or_reuse("eta", root)
+    opened[#opened + 1] = eta
+    local g = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_gamma.bufnr)[1])
+    local z = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_zeta.bufnr)[1])
+    local e = vim.fn.win_screenpos(vim.fn.win_findbuf(eta.bufnr)[1])
+    ok(e[1] > z[1], "third terminal row below second")
+    ok(z[1] > g[1], "second terminal still below first")
+    eq(vim.api.nvim_win_get_width(vim.fn.win_findbuf(eta.bufnr)[1]), 40, "third terminal keeps the column width")
+  end)
+
+  test("reopened terminal split lands back in the column", function()
+    -- given zeta's window closed while gamma's and eta's remain; when zeta is
+    -- reopened; then its split joins the column instead of a new vertical split
+    local zeta_wins = vim.fn.win_findbuf(opened_zeta.bufnr)
+    vim.api.nvim_win_close(zeta_wins[1], true)
+    eq(#vim.fn.win_findbuf(opened_zeta.bufnr), 0, "zeta window closed, buffer hidden")
+    local again = terminal.open_or_reuse("zeta", root)
+    eq(again.bufnr, opened_zeta.bufnr, "same buffer reused")
+    local w = vim.fn.win_findbuf(again.bufnr)[1]
+    eq(vim.api.nvim_win_get_width(w), 40, "reopened split keeps the column width")
+    local g = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_gamma.bufnr)[1])
+    ok(vim.fn.win_screenpos(w)[1] > g[1], "reopened split below the column top")
   end)
 
   local delta_entry = nil
