@@ -23,7 +23,7 @@ Lazy:
 ```lua
 -- with lazy.nvim
 {
-  "<repo>/pi-jail.nvim",
+  "metlos/pi-jail.nvim",
   opts = {},
 }
 ```
@@ -66,7 +66,7 @@ Defaults:
 ```lua
 require("pi-jail").setup({
   pctl = "pctl", -- pctl executable (name on PATH, or an absolute path)
-  pi = "pi", -- pi executable (name on PATH, or an absolute path)
+  pi = "pi", -- pi executable (name on PATH, or an absolute path) - this is the script defined from pi-jail, not the actual Pi agent
   dir_change_scope = "cd", -- ":cd" (global) or ":tcd" (tab-local) when entering a ws
   terminal = {
     keep_on_exit = true, -- keep the split + buffer around after the agent exits
