@@ -13,6 +13,7 @@ local config = require("pi-jail.config")
 local ops = require("pi-jail.ops")
 local project = require("pi-jail.project")
 local terminal = require("pi-jail.terminal")
+local follow = require("pi-jail.follow")
 
 local M = {}
 
@@ -198,10 +199,11 @@ function M.run(sub, args)
 end
 
 ---Plugin setup: forwards opts to config (pctl, pi, terminal.keep_on_exit,
----terminal.size).
+---terminal.size), then registers the focus-follow autocmd.
 ---@param opts table|nil
 function M.setup(opts)
   config.setup(opts)
+  follow.setup()
 end
 
 vim.api.nvim_create_user_command("Pj", function(opts)

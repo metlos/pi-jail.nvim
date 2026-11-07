@@ -11,7 +11,7 @@ local config = require("pi-jail.config")
 
 local M = {}
 
--- ws_name -> { bufnr, job_id } for every terminal ever created here.
+-- ws_name -> { bufnr, job_id, root } for every terminal ever created here.
 M.registry = {}
 
 local function job_alive(job_id)
@@ -50,9 +50,21 @@ local function spawn(ws_name, root, mode)
     end,
   })
   vim.cmd("startinsert")
-  local entry = { ws_name = ws_name, bufnr = bufnr, job_id = job_id }
+  local entry = { ws_name = ws_name, bufnr = bufnr, job_id = job_id, root = root }
   M.registry[ws_name] = entry
   return entry
+end
+
+---Look up the registry entry owning a buffer, or nil for non-terminal buffers.
+---@param bufnr integer
+---@return table|nil entry
+function M.entry_for_buf(bufnr)
+  for _, entry in pairs(M.registry) do
+    if entry.bufnr == bufnr then
+      return entry
+    end
+  end
+  return nil
 end
 
 ---Open (or reuse) the terminal for workspace ws_name.
