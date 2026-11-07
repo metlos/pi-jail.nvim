@@ -33,7 +33,7 @@ local function ok(cond, msg)
 end
 
 -- Set up module resolution under -u NONE.
-package.path = "/work/ws/nvim-plugin/lua/?.lua;" .. package.path
+package.path = "lua/?.lua;" .. package.path
 
 local function load_module(name)
   local okmod, mod = pcall(require, name)

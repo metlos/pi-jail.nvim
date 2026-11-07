@@ -63,8 +63,8 @@ local function eq_deep(actual, expected, msg)
 end
 
 -- Set up module resolution under -u NONE (?/init.lua for require("pi-jail")).
-package.path = "/work/ws/nvim-plugin/lua/?.lua;/work/ws/nvim-plugin/lua/?/init.lua;"
-  .. package.path
+-- run.sh cds to the repo root, so the repo's own lua/ dir is relative-safe.
+package.path = "lua/?.lua;lua/?/init.lua;" .. package.path
 
 local function load_module(name)
   local okmod, mod = pcall(require, name)
@@ -120,6 +120,7 @@ else
   local project = require("pi-jail.project")
   local ops = require("pi-jail.ops")
   local terminal = require("pi-jail.terminal")
+  local config = require("pi-jail.config")
 
   -- Saved originals for teardown.
   local saved = {
@@ -237,7 +238,11 @@ else
     stub.input_cancel = false
     stub.confirm_results = {}
     stub.pctl_results = {}
+    -- Reset both cwd scopes so drift from a previous test cannot leak in.
+    -- dir_change_scope is NOT reset here: the default-scope test must observe
+    -- the real default, and the tcd test restores it itself.
     vim.cmd("tcd " .. vim.fn.fnameescape(root))
+    vim.cmd("cd " .. vim.fn.fnameescape(root))
     set_current_buf_dir(root)
   end
 
@@ -276,7 +281,7 @@ else
     init.run(nil, {})
     eq(#rec.find_root, 1, "root resolved once")
     eq(rec.find_root[1], cwd_before, "find_root called with the cwd at dispatch time")
-    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "tcd changed the tab cwd into ws/alpha")
+    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "entering changed the window cwd into ws/alpha")
     eq(#rec.open, 1, "terminal opened once")
     eq(rec.open[1].name, "alpha", "terminal for the chosen ws")
     eq(rec.open[1].root, root, "terminal rooted at the repo root")
@@ -292,7 +297,7 @@ else
   test(":Pj ws <name> enters that workspace without the picker", function()
     init.run("ws", { "beta" })
     eq(#rec.select, 0, "no picker for an explicit name")
-    eq(vim.fn.getcwd(0), root .. "/ws/beta", "tcd into ws/beta")
+    eq(vim.fn.getcwd(0), root .. "/ws/beta", "cwd into ws/beta")
     eq(#rec.open, 1, "terminal opened once")
     eq(rec.open[1].name, "beta", "terminal for beta")
     eq(rec.open[1].mode, "ws", "agent mode")
@@ -302,13 +307,32 @@ else
     vim.api.nvim_command("Pj ws beta")
     eq(#rec.select, 0, "no picker")
     eq(rec.open[1].name, "beta", "arg routed to the ws handler")
-    eq(vim.fn.getcwd(0), root .. "/ws/beta", "tcd into ws/beta")
+    eq(vim.fn.getcwd(0), root .. "/ws/beta", "cwd into ws/beta")
   end)
 
   test(":Pj ws without a name falls back to the picker", function()
     init.run("ws", {})
     eq(#rec.select, 1, "picker opened")
     eq(rec.open[1].name, "alpha", "chosen ws entered")
+  end)
+
+  test("default dir_change_scope=cd sets the global cwd", function()
+    -- given untouched config; when entering a workspace; then the global cwd
+    -- changes (window-local follows)
+    init.run("ws", { "alpha" })
+    eq(vim.fn.getcwd(-1, -1), root .. "/ws/alpha", "global cwd changed into ws/alpha")
+    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "window cwd follows the global one")
+  end)
+
+  test("dir_change_scope=tcd sets only the tab-local cwd", function()
+    -- given dir_change_scope=tcd set after init was already required; when
+    -- entering a workspace; then the tab cwd changes but the global cwd stays
+    -- untouched (also proves the scope is read at call time, not cached)
+    config.setup({ dir_change_scope = "tcd" })
+    init.run("ws", { "beta" })
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd unchanged")
+    eq(vim.fn.getcwd(0), root .. "/ws/beta", "tab cwd changed into ws/beta")
+    config.setup({ dir_change_scope = "cd" }) -- restore the default
   end)
 
   test(":Pj new with a name creates the workspace only", function()

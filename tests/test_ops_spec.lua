@@ -32,7 +32,7 @@ local function ok(cond, msg)
 end
 
 -- Set up module resolution under -u NONE.
-package.path = "/work/ws/nvim-plugin/lua/?.lua;" .. package.path
+package.path = "lua/?.lua;" .. package.path
 
 local function load_module(name)
   local okmod, mod = pcall(require, name)
@@ -142,11 +142,12 @@ else
   test("config.setup merges over defaults too", function()
     -- Reset observability: a fresh require via dofile to check default merge,
     -- without disturbing the shared module table used by ops below.
-    local fresh = dofile("/work/ws/nvim-plugin/lua/pi-jail/config.lua")
+    local fresh = dofile("lua/pi-jail/config.lua")
     fresh.setup({ terminal = { size = 0.25 } })
     eq(fresh.get().terminal.size, 0.25, "fresh setup overrides terminal.size")
     eq(fresh.get().terminal.keep_on_exit, true, "fresh setup keeps terminal.keep_on_exit default")
     eq(fresh.get().pctl, "pctl", "fresh setup keeps default pctl")
+    eq(fresh.get().dir_change_scope, "cd", "fresh setup keeps default dir_change_scope")
   end)
 
   test("run_pctl returns ok result with empty stderr on success", function()

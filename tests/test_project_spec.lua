@@ -61,7 +61,7 @@ local function eq_deep(actual, expected, msg)
 end
 
 -- Set up module resolution under -u NONE.
-package.path = "/work/ws/nvim-plugin/lua/?.lua;" .. package.path
+package.path = "lua/?.lua;" .. package.path
 
 local function load_project()
   local okmod, mod = pcall(require, "pi-jail.project")

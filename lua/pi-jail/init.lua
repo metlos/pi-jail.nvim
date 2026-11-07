@@ -3,7 +3,7 @@
 -- notifications) and holds no business logic of its own.
 --
 -- Subcommands:
---   :Pj [ws [name]]  pick or name a workspace: tcd into it + agent terminal
+--   :Pj [ws [name]]  pick or name a workspace: set cwd into it + agent terminal
 --   :Pj new [name]   pctl new (create only: no chdir, no agent)
 --   :Pj drop [name]  pctl drop with confirm + unlanded-work --force flow
 --   :Pj fill [name]  pctl fill, targeting the buffer's workspace by default
@@ -64,8 +64,9 @@ local function pick_ws(root, on_choice)
   end)
 end
 
----tcd into root/ws/<name> (tab-local, so other tabs keep their cwd) and open
----the workspace's terminal. tcd happens first so a spawned agent inherits it.
+---Set the workspace cwd (scope from config.dir_change_scope: "cd" global
+---or "tcd" tab-local) and open the workspace's terminal. chdir happens first
+---so a spawned agent inherits it.
 ---@param name string workspace name
 ---@param root string adopted repo root
 ---@param mode string "ws" (agent) or "debug" (jail shell)
@@ -75,7 +76,7 @@ local function enter_ws(name, root, mode)
     vim.notify("ws/" .. name .. " does not exist (create it with :Pj new)", vim.log.levels.ERROR)
     return
   end
-  vim.cmd("tcd " .. vim.fn.fnameescape(ws_dir))
+  vim.cmd(config.get().dir_change_scope .. " " .. vim.fn.fnameescape(ws_dir))
   terminal.open_or_reuse(name, root, mode)
 end
 

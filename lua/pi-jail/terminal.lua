@@ -4,8 +4,8 @@
 -- The terminal runs `<pi> <mode> <ws>` (mode "ws" = agent TUI, "debug" = jail
 -- shell) via termopen, cwd = adopted repo root. The buffer is registered per
 -- workspace name and reused while its job lives; a dead buffer is reused only
--- when config.terminal.keep_on_exit kept it. tcd'ing into the workspace is the
--- caller's (init.lua) job; only the terminal lifecycle lives here.
+-- when config.terminal.keep_on_exit kept it. chdir'ing into the workspace is
+-- the caller's (init.lua) job; only the terminal lifecycle lives here.
 
 local config = require("pi-jail.config")
 

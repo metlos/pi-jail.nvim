@@ -5,8 +5,8 @@ Neovim plugin for pi-jail repositories: jj repos adopted by `pctl`, where every 
 
 It gives you:
 
-- `:Pj [ws]` — enter a workspace: `tcd` into `ws/<name>` and open the pi coding agent there in a persistent terminal
-  (reused across invocations, one per workspace).
+- `:Pj [ws]` — enter a workspace: change the cwd to `ws/<name>` and open the pi coding agent there in a persistent
+  terminal (reused across invocations, one per workspace).
 - `:Pj debug` — a jail shell (`pi debug`) for the workspace your buffer is in.
 - `:Pj new` / `:Pj fill` / `:Pj drop` — thin, confirmed wrappers around the matching `pctl` commands.
 
@@ -50,8 +50,8 @@ repo). Outside a project they notify an error and do nothing.
 
 Details:
 
-- **Enter** (`:Pj`, `:Pj ws`): `tcd` into `ws/<name>` first (tab-local), then open/reuse the workspace's agent terminal.
-  `ws/<name>` is a normal terminal buffer; the agent keeps running while you edit in other splits.
+- **Enter** (`:Pj`, `:Pj ws`): change the working directory into `ws/<name>` first, then open/reuse the workspace's
+  agent terminal. `ws/<name>` is a normal terminal buffer; the agent keeps running while you edit in other splits.
 - **New** creates the workspace only: no chdir, no agent start.
 - **Drop** always confirms (`Drop ws/<name>?`). If `pctl drop` reports unlanded work, a second confirm offers `--force`.
   Success and failure are surfaced with `vim.notify` (failure shows pctl's stderr verbatim).
@@ -64,12 +64,20 @@ Defaults:
 require("pi-jail").setup({
   pctl = "pctl", -- pctl executable (name on PATH, or an absolute path)
   pi = "pi", -- pi executable (name on PATH, or an absolute path)
+  dir_change_scope = "cd", -- ":cd" (global) or ":tcd" (tab-local) when entering a ws
   terminal = {
     keep_on_exit = true, -- keep the split + buffer around after the agent exits
     size = 0.4, -- terminal split width as a fraction of &columns
   },
 })
 ```
+
+## Plugin interop
+
+`dir_change_scope = "cd"` (the default) makes cwd-following plugins follow along automatically: the `:cd` fires
+`DirChanged global`, which e.g. a neo-tree sidebar with `bind_to_cwd = true` listens to. Use `"tcd"` if you want other
+tabs to keep their cwd — then configure such plugins to watch the tab scope instead (neo-tree:
+`cwd_target.sidebar = "tab"`).
 
 ## Development
 
