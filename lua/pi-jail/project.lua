@@ -1,10 +1,9 @@
--- pi-jail.project: root discovery and workspace listing for a pctl-adopted jj repo.
+-- pi-jail.project: root discovery and workspace listing for a pj-adopted jj repo.
 --
--- A repo is "adopted" (pctl) iff its jj root contains both `ws/` and `shared/`
--- directories directly under it. Workspaces are the entries of
--- `jj workspace list` excluding `default`; the `current` flag is computed from a
--- reference directory (nvim's cwd by default) because jj always marks the
--- workspace matching its own process cwd (we run jj with cwd=root, i.e. default).
+-- Root detection mirrors pj's is_root: the dir carries the adoption marks
+-- (ws/ or shared/ exists, .jj/repo is a real dir - added workspaces carry only
+-- a pointer file), and its default workspace has a narrowed sparse checkout
+-- (pj init dematerializes the root; a full-checkout look-alike is not a root).
 
 local M = {}
 
@@ -24,16 +23,43 @@ local function normalize(path)
   return path
 end
 
----Walk up from start_dir to the first directory that is a pctl-adopted jj root:
----contains a `.jj` entry (directory or file) plus `ws/` and `shared/` directly
----under it. Colocated workspaces have their own `.jj` without the adopted
----layout, so those are skipped and the walk continues upward.
+---Run `jj sparse list` in dir, trailing whitespace stripped (like bash's
+---command substitution); nil on failure (not a repo, jj missing, ...).
+---@param dir string
+---@return string|nil sparse pattern list
+local function jj_sparse_list(dir)
+  local out = vim.system({ "jj", "sparse", "list" }, { cwd = dir, text = true }):wait()
+  if out.code ~= 0 then
+    return nil
+  end
+  return (out.stdout or ""):gsub("%s+$", "")
+end
+
+---True iff dir is a pj-adopted jj root (pj's is_root, verbatim algo):
+---ws/ or shared/ present, .jj/repo a real dir, and the root's default
+---workspace narrowed (sparse list != ".").
+---@param dir string normalized candidate
+---@return boolean
+local function is_root(dir)
+  if not (is_dir(dir .. "/ws") or is_dir(dir .. "/shared")) then
+    return false
+  end
+  if not is_dir(dir .. "/.jj/repo") then
+    return false
+  end
+  local sparse = jj_sparse_list(dir)
+  return sparse ~= nil and sparse ~= "."
+end
+
+---Walk up from start_dir to the first directory that is a pj-adopted jj root
+---(see is_root). Colocated workspaces have only a .jj pointer file without the
+---adopted layout, so those are skipped and the walk continues upward.
 ---@param start_dir string
 ---@return string|nil root
 function M.find_root(start_dir)
   local dir = normalize(start_dir)
   while true do
-    if vim.loop.fs_stat(dir .. "/.jj") ~= nil and is_dir(dir .. "/ws") and is_dir(dir .. "/shared") then
+    if is_root(dir) then
       return dir
     end
     local parent = vim.fs.dirname(dir)
@@ -102,7 +128,7 @@ end
 ---root/ws, root/shared/..., or anything outside root.
 ---@param root string normalized repo root
 ---@param path string|nil buffer file path
----@return string|nil ws_name
+---@return string|nil name
 function M.current_ws(root, path)
   if path == nil then
     return nil

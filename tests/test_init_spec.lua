@@ -1,6 +1,6 @@
 -- Spec for pi-jail.init: :Pj command dispatch + UX glue (picker, prompts,
 -- confirms, notifications) on top of project/config/ops/terminal.
--- Boundaries (find_root, list_workspaces, run_pctl, open_or_reuse, vim.ui.*,
+-- Boundaries (find_root, list_workspaces, run_pj, open_or_reuse, vim.ui.*,
 -- vim.fn.confirm, vim.notify) are stubbed with programmatic versions.
 -- Signals failure via `vim.cmd("cq")` after counting failures; run.sh greps the exit code.
 
@@ -126,7 +126,7 @@ else
   local saved = {
     find_root = project.find_root,
     list_workspaces = project.list_workspaces,
-    run_pctl = ops.run_pctl,
+    run_pj = ops.run_pj,
     open_or_reuse = terminal.open_or_reuse,
     select = vim.ui.select,
     input = vim.ui.input,
@@ -141,7 +141,7 @@ else
     select = {},
     input = {},
     confirm = {},
-    pctl = {},
+    pj = {},
     open = {},
     notify = {},
   }
@@ -150,12 +150,12 @@ else
   local stub = {
     root = root,
     workspaces = { { name = "alpha", dirty = false }, { name = "beta", dirty = true } },
-    select_choice = "alpha",
+    select_choice = "ws/alpha",
     select_cancel = false,
-    input_value = "gamma",
+    input_value = "ws/gamma",
     input_cancel = false,
     confirm_results = {},
-    pctl_results = {},
+    pj_results = {},
   }
 
   local function next_from(queue, default)
@@ -175,9 +175,9 @@ else
     return stub.workspaces
   end
 
-  ops.run_pctl = function(args, r)
-    rec.pctl[#rec.pctl + 1] = { args = args, root = r }
-    return next_from(stub.pctl_results, { ok = true, stdout = "", stderr = "", code = 0 })
+  ops.run_pj = function(args, r)
+    rec.pj[#rec.pj + 1] = { args = args, root = r }
+    return next_from(stub.pj_results, { ok = true, stdout = "", stderr = "", code = 0 })
   end
 
   terminal.open_or_reuse = function(name, r, mode)
@@ -232,12 +232,12 @@ else
     end
     stub.root = root
     stub.workspaces = { { name = "alpha", dirty = false }, { name = "beta", dirty = true } }
-    stub.select_choice = "alpha"
+    stub.select_choice = "ws/alpha"
     stub.select_cancel = false
-    stub.input_value = "gamma"
+    stub.input_value = "ws/gamma"
     stub.input_cancel = false
     stub.confirm_results = {}
-    stub.pctl_results = {}
+    stub.pj_results = {}
     -- Reset both cwd scopes so drift from a previous test cannot leak in.
     -- dir_change_scope is NOT reset here: the default-scope test must observe
     -- the real default, and the tcd test restores it itself.
@@ -258,34 +258,34 @@ else
     eq_deep(cmds.Pj.complete("d", ":Pj d", 5), { "drop", "debug" }, "completing 'd' lists drop+debug")
     eq_deep(
       cmds.Pj.complete("", ":Pj ", 4),
-      { "ws", "new", "drop", "fill", "debug" },
+      { "open", "new", "drop", "fill", "debug" },
       "completing '' lists all subcommands"
     )
     eq_deep(cmds.Pj.complete("zz", ":Pj zz", 5), {}, "unknown lead completes nothing")
-    eq_deep(cmds.Pj.complete("", ":Pj ws ", 7), {}, "only the subcommand position completes")
+    eq_deep(cmds.Pj.complete("", ":Pj open ", 9), {}, "only the subcommand position completes")
   end)
 
   test("bare dispatch lists formatted workspaces in the picker", function()
     -- given two workspaces (alpha clean, beta dirty); when :Pj runs bare;
-    -- then the picker shows them formatted "name" / "name *"
+    -- then the picker shows them formatted "ws/name" / "ws/name *"
     init.run(nil, {})
     eq(#rec.select, 1, "picker opened once")
-    eq_deep(rec.select[1].items, { "alpha", "beta *" }, "items formatted name + dirty marker")
+    eq_deep(rec.select[1].items, { "ws/alpha", "ws/beta *" }, "items formatted ws/name + dirty marker")
     eq(rec.select[1].prompt, "pi-jail workspace:", "picker prompt")
   end)
 
   test("bare dispatch on_choice enters the workspace terminal", function()
-    -- given the picker offers alpha; when alpha is chosen; then tcd + agent terminal
-    stub.select_choice = "alpha"
+    -- given the picker offers ws/alpha; when chosen; then chdir + agent terminal
+    stub.select_choice = "ws/alpha"
     local cwd_before = vim.loop.cwd()
     init.run(nil, {})
     eq(#rec.find_root, 1, "root resolved once")
     eq(rec.find_root[1], cwd_before, "find_root called with the cwd at dispatch time")
     eq(vim.fn.getcwd(0), root .. "/ws/alpha", "entering changed the window cwd into ws/alpha")
     eq(#rec.open, 1, "terminal opened once")
-    eq(rec.open[1].name, "alpha", "terminal for the chosen ws")
+    eq(rec.open[1].name, "ws/alpha", "terminal for the chosen ws")
     eq(rec.open[1].root, root, "terminal rooted at the repo root")
-    eq(rec.open[1].mode, "ws", "agent mode")
+    eq(rec.open[1].mode, "open", "agent mode")
   end)
 
   test(":Pj command routes a bare invocation through the dispatch", function()
@@ -294,32 +294,55 @@ else
     eq(#rec.open, 1, "terminal opened after choosing")
   end)
 
-  test(":Pj ws <name> enters that workspace without the picker", function()
-    init.run("ws", { "beta" })
-    eq(#rec.select, 0, "no picker for an explicit name")
+  test(":Pj open <ws/name> enters that workspace without the picker", function()
+    init.run("open", { "ws/beta" })
+    eq(#rec.select, 0, "no picker for an explicit ws id")
     eq(vim.fn.getcwd(0), root .. "/ws/beta", "cwd into ws/beta")
     eq(#rec.open, 1, "terminal opened once")
-    eq(rec.open[1].name, "beta", "terminal for beta")
-    eq(rec.open[1].mode, "ws", "agent mode")
+    eq(rec.open[1].name, "ws/beta", "terminal for ws/beta")
+    eq(rec.open[1].mode, "open", "agent mode")
   end)
 
-  test(":Pj command parses 'ws beta' into subcommand + args", function()
-    vim.api.nvim_command("Pj ws beta")
+  test(":Pj command parses 'open ws/beta' into subcommand + args", function()
+    vim.api.nvim_command("Pj open ws/beta")
     eq(#rec.select, 0, "no picker")
-    eq(rec.open[1].name, "beta", "arg routed to the ws handler")
+    eq(rec.open[1].name, "ws/beta", "arg routed to the open handler")
     eq(vim.fn.getcwd(0), root .. "/ws/beta", "cwd into ws/beta")
   end)
 
-  test(":Pj ws without a name falls back to the picker", function()
-    init.run("ws", {})
+  test(":Pj open without a ws id falls back to the picker", function()
+    init.run("open", {})
     eq(#rec.select, 1, "picker opened")
-    eq(rec.open[1].name, "alpha", "chosen ws entered")
+    eq(rec.open[1].name, "ws/alpha", "chosen ws entered")
+  end)
+
+  test("bad-form ws ids are rejected before anything runs", function()
+    -- given every subcommand that takes a ws id; when given a bad form;
+    -- then one ERROR notify naming the input and no boundary call happens
+    local bad = { "gamma", "ws/", "ws//x", "ws/a/b", "ws/..", "ws/." }
+    for _, sub in ipairs({ "open", "new", "drop", "fill" }) do
+      for _, arg in ipairs(bad) do
+        for k in pairs(rec) do
+          rec[k] = {}
+        end
+        init.run(sub, { arg })
+        local label = sub .. " " .. arg
+        eq(#rec.notify, 1, label .. ": one notify")
+        eq(rec.notify[1].level, vim.log.levels.ERROR, label .. ": at ERROR")
+        ok(rec.notify[1].msg:find(arg, 1, true) ~= nil, label .. ": message names the input")
+        eq(
+          #rec.pj + #rec.open + #rec.select + #rec.input + #rec.confirm,
+          0,
+          label .. ": nothing ran"
+        )
+      end
+    end
   end)
 
   test("default dir_change_scope=cd sets the global cwd", function()
     -- given untouched config; when entering a workspace; then the global cwd
     -- changes (window-local follows)
-    init.run("ws", { "alpha" })
+    init.run("open", { "ws/alpha" })
     eq(vim.fn.getcwd(-1, -1), root .. "/ws/alpha", "global cwd changed into ws/alpha")
     eq(vim.fn.getcwd(0), root .. "/ws/alpha", "window cwd follows the global one")
   end)
@@ -329,148 +352,167 @@ else
     -- entering a workspace; then the tab cwd changes but the global cwd stays
     -- untouched (also proves the scope is read at call time, not cached)
     config.setup({ dir_change_scope = "tcd" })
-    init.run("ws", { "beta" })
+    init.run("open", { "ws/beta" })
     eq(vim.fn.getcwd(-1, -1), root, "global cwd unchanged")
     eq(vim.fn.getcwd(0), root .. "/ws/beta", "tab cwd changed into ws/beta")
     config.setup({ dir_change_scope = "cd" }) -- restore the default
   end)
 
-  test(":Pj new with a name creates the workspace only", function()
-    -- given an explicit name; when :Pj new runs; then pctl new is called with
+  test(":Pj new with a ws id creates the workspace only", function()
+    -- given an explicit ws id; when :Pj new runs; then pj new is called with
     -- no chdir and no agent start (create only)
-    init.run("new", { "gamma" })
-    eq(#rec.pctl, 1, "one pctl call")
-    eq_deep(rec.pctl[1].args, { "new", "gamma" }, "pctl new gamma")
-    eq(rec.pctl[1].root, root, "pctl run at the repo root")
-    eq(#rec.select + #rec.input, 0, "no picker or prompt with an explicit name")
+    init.run("new", { "ws/gamma" })
+    eq(#rec.pj, 1, "one pj call")
+    eq_deep(rec.pj[1].args, { "new", "ws/gamma" }, "pj new ws/gamma")
+    eq(rec.pj[1].root, root, "pj run at the repo root")
+    eq(#rec.select + #rec.input, 0, "no picker or prompt with an explicit ws id")
     eq(#rec.open, 0, "no agent terminal started")
     eq(vim.fn.getcwd(0), root, "no chdir")
-    eq(rec.notify[1].msg, "pctl new ws/gamma", "success notification")
+    eq(rec.notify[1].msg, "pj new ws/gamma", "success notification")
     eq(rec.notify[1].level, vim.log.levels.INFO, "success at INFO")
   end)
 
-  test(":Pj new without a name prompts for one", function()
-    stub.input_value = "gamma"
+  test(":Pj new without a ws id prompts for one", function()
+    stub.input_value = "ws/gamma"
     init.run("new", {})
     eq(#rec.input, 1, "input prompt shown")
     ok(
-      rec.input[1].prompt ~= nil and rec.input[1].prompt:find("name", 1, true) ~= nil,
-      "prompt mentions the name"
+      rec.input[1].prompt ~= nil and rec.input[1].prompt:find("ws/", 1, true) ~= nil,
+      "prompt mentions the ws/ form"
     )
-    eq_deep(rec.pctl[1].args, { "new", "gamma" }, "entered name used")
-    eq(rec.notify[1].msg, "pctl new ws/gamma", "success notification")
+    eq_deep(rec.pj[1].args, { "new", "ws/gamma" }, "entered ws id used")
+    eq(rec.notify[1].msg, "pj new ws/gamma", "success notification")
   end)
 
   test(":Pj new input cancelled runs nothing", function()
     stub.input_cancel = true
     init.run("new", {})
-    eq(#rec.pctl, 0, "no pctl call on cancelled prompt")
+    eq(#rec.pj, 0, "no pj call on cancelled prompt")
     eq(#rec.notify, 0, "no notification")
   end)
 
+  test(":Pj new prompt with a bad form notifies and runs nothing", function()
+    stub.input_value = "gamma"
+    init.run("new", {})
+    eq(#rec.pj, 0, "no pj call on bad form")
+    eq(#rec.notify, 1, "one notification")
+    eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
+    ok(rec.notify[1].msg:find("gamma", 1, true) ~= nil, "message names the input")
+  end)
+
   test(":Pj new failure notifies stderr verbatim at ERROR", function()
-    stub.pctl_results = { { ok = false, stdout = "", stderr = "pctl: name taken\n", code = 1 } }
-    init.run("new", { "gamma" })
-    eq(rec.notify[1].msg, "pctl: name taken\n", "stderr verbatim")
+    stub.pj_results = { { ok = false, stdout = "", stderr = "pj: name taken\n", code = 1 } }
+    init.run("new", { "ws/gamma" })
+    eq(rec.notify[1].msg, "pj: name taken\n", "stderr verbatim")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "failure at ERROR")
   end)
 
   test(":Pj drop picks, confirms, then drops", function()
-    -- given the picker offers "beta *" (dirty); when chosen and confirmed;
-    -- then the dirty marker is stripped and pctl drop beta runs
-    stub.select_choice = "beta *"
+    -- given the picker offers "ws/beta *" (dirty); when chosen and confirmed;
+    -- then the dirty marker is stripped and pj drop ws/beta runs
+    stub.select_choice = "ws/beta *"
     init.run("drop", {})
     eq(#rec.select, 1, "picker opened")
     eq(#rec.confirm, 1, "one confirmation")
     ok(rec.confirm[1]:find("ws/beta", 1, true) ~= nil, "confirm names the workspace")
-    eq_deep(rec.pctl[1].args, { "drop", "beta" }, "dirty marker stripped from the choice")
-    eq(rec.notify[1].msg, "pctl drop ws/beta", "success notification")
+    eq_deep(rec.pj[1].args, { "drop", "ws/beta" }, "dirty marker stripped from the choice")
+    eq(rec.notify[1].msg, "pj drop ws/beta", "success notification")
   end)
 
   test(":Pj drop declined at the first confirm drops nothing", function()
     stub.confirm_results = { 2 }
     init.run("drop", {})
-    eq(#rec.pctl, 0, "no pctl call when declined")
+    eq(#rec.pj, 0, "no pj call when declined")
     eq(#rec.notify, 0, "no notification")
   end)
 
   test(":Pj drop with unlanded work offers --force", function()
     -- given drop fails with "unlanded work" in stderr; when both confirms
-    -- accepted; then drop is retried with --force
-    stub.select_choice = "beta *"
-    stub.pctl_results = {
-      { ok = false, stdout = "", stderr = "pctl: ws/beta has unlanded work\n", code = 1 },
+    -- accepted; then drop is retried with --force before the ws id
+    stub.select_choice = "ws/beta *"
+    stub.pj_results = {
+      {
+        ok = false,
+        stdout = "",
+        stderr = "pj: ws/beta has unlanded work in its working copy; use --force to drop anyway\n",
+        code = 1,
+      },
     }
     stub.confirm_results = { 1, 1 }
     init.run("drop", {})
     eq(#rec.confirm, 2, "force confirmation offered")
     ok(rec.confirm[2]:find("%-%-force", 1) ~= nil, "second confirm mentions --force")
-    eq(#rec.pctl, 2, "drop retried with --force")
-    eq_deep(rec.pctl[2].args, { "drop", "beta", "--force" }, "pctl drop beta --force")
-    eq(rec.notify[1].msg, "pctl drop ws/beta --force", "success notification for the forced drop")
+    eq(#rec.pj, 2, "drop retried with --force")
+    eq_deep(rec.pj[2].args, { "drop", "--force", "ws/beta" }, "pj drop --force ws/beta")
+    eq(rec.notify[1].msg, "pj drop --force ws/beta", "success notification for the forced drop")
   end)
 
   test(":Pj drop unlanded work declined leaves the ws alone", function()
-    stub.pctl_results = {
-      { ok = false, stdout = "", stderr = "pctl: ws/alpha has unlanded work\n", code = 1 },
+    stub.pj_results = {
+      {
+        ok = false,
+        stdout = "",
+        stderr = "pj: ws/alpha has unlanded work in its working copy; use --force to drop anyway\n",
+        code = 1,
+      },
     }
     stub.confirm_results = { 1, 2 }
     init.run("drop", {})
-    eq(#rec.pctl, 1, "only the plain drop attempted")
+    eq(#rec.pj, 1, "only the plain drop attempted")
     eq(#rec.notify, 0, "no notification when force declined")
   end)
 
   test(":Pj drop failure without unlanded work notifies stderr", function()
-    stub.pctl_results = { { ok = false, stdout = "", stderr = "pctl: nope\n", code = 1 } }
-    init.run("drop", { "gamma" })
+    stub.pj_results = { { ok = false, stdout = "", stderr = "pj: nope\n", code = 1 } }
+    init.run("drop", { "ws/gamma" })
     eq(#rec.confirm, 1, "no force offer")
-    eq(rec.notify[1].msg, "pctl: nope\n", "stderr verbatim")
+    eq(rec.notify[1].msg, "pj: nope\n", "stderr verbatim")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
   end)
 
-  test(":Pj drop with an explicit name skips the picker", function()
-    init.run("drop", { "gamma" })
+  test(":Pj drop with an explicit ws id skips the picker", function()
+    init.run("drop", { "ws/gamma" })
     eq(#rec.select, 0, "no picker")
-    eq_deep(rec.pctl[1].args, { "drop", "gamma" }, "direct drop")
+    eq_deep(rec.pj[1].args, { "drop", "ws/gamma" }, "direct drop")
   end)
 
   test(":Pj fill targets the buffer's workspace", function()
     -- given the current buffer is inside ws/alpha; when :Pj fill runs;
-    -- then alpha is filled without the picker
+    -- then ws/alpha is filled without the picker
     set_current_buf_dir(root .. "/ws/alpha")
     init.run("fill", {})
     eq(#rec.select, 0, "no picker inside a ws")
-    eq_deep(rec.pctl[1].args, { "fill", "alpha" }, "fill alpha from the buffer path")
-    eq(rec.notify[1].msg, "pctl fill ws/alpha", "success notification")
+    eq_deep(rec.pj[1].args, { "fill", "ws/alpha" }, "fill ws/alpha from the buffer path")
+    eq(rec.notify[1].msg, "pj fill ws/alpha", "success notification")
   end)
 
   test(":Pj fill falls back to the picker outside a ws", function()
     set_current_buf_dir(root)
-    stub.select_choice = "beta *"
+    stub.select_choice = "ws/beta *"
     init.run("fill", {})
     eq(#rec.select, 1, "picker opened outside a ws")
-    eq_deep(rec.pctl[1].args, { "fill", "beta" }, "fill the chosen ws")
+    eq_deep(rec.pj[1].args, { "fill", "ws/beta" }, "fill the chosen ws")
   end)
 
-  test(":Pj fill with an explicit name skips detection", function()
+  test(":Pj fill with an explicit ws id skips detection", function()
     set_current_buf_dir(root .. "/ws/alpha")
-    init.run("fill", { "gamma" })
+    init.run("fill", { "ws/gamma" })
     eq(#rec.select, 0, "no picker")
-    eq_deep(rec.pctl[1].args, { "fill", "gamma" }, "explicit name wins")
+    eq_deep(rec.pj[1].args, { "fill", "ws/gamma" }, "explicit ws id wins")
   end)
 
   test(":Pj debug opens the jail shell for the buffer's workspace", function()
     set_current_buf_dir(root .. "/ws/alpha")
     init.run("debug", {})
     eq(#rec.select, 0, "no picker inside a ws")
-    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "tcd into ws/alpha")
-    eq(rec.open[1].name, "alpha", "terminal for alpha")
+    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "cwd into ws/alpha")
+    eq(rec.open[1].name, "ws/alpha", "terminal for ws/alpha")
     eq(rec.open[1].mode, "debug", "debug mode")
   end)
 
   test(":Pj debug falls back to the picker outside a ws", function()
     set_current_buf_dir(root)
-    stub.select_choice = "alpha"
+    stub.select_choice = "ws/alpha"
     init.run("debug", {})
     eq(#rec.select, 1, "picker opened")
     eq(rec.open[1].mode, "debug", "debug mode after choosing")
@@ -478,22 +520,22 @@ else
 
   test("unknown subcommand notifies an error", function()
     init.run("bogus", {})
-    eq(#rec.pctl + #rec.open, 0, "nothing ran")
+    eq(#rec.pj + #rec.open, 0, "nothing ran")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
     ok(rec.notify[1].msg:find("bogus", 1, true) ~= nil, "message names the subcommand")
   end)
 
   test("no root: commands notify an error and run nothing", function()
     stub.root = nil
-    init.run("new", { "gamma" })
+    init.run("new", { "ws/gamma" })
     eq(#rec.notify, 1, "one notification")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
     ok(rec.notify[1].msg:find("pi%-jail", 1) ~= nil, "message identifies the plugin")
-    eq(#rec.pctl + #rec.open + #rec.select, 0, "no boundary called past the guard")
+    eq(#rec.pj + #rec.open + #rec.select, 0, "no boundary called past the guard")
   end)
 
-  test(":Pj ws with an unknown name notifies and opens nothing", function()
-    init.run("ws", { "nope" })
+  test(":Pj open with an unknown name notifies and opens nothing", function()
+    init.run("open", { "ws/nope" })
     eq(#rec.open, 0, "no terminal for an unknown ws")
     eq(vim.fn.getcwd(0), root, "cwd unchanged")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
@@ -516,13 +558,13 @@ else
   test("picker cancel does nothing", function()
     stub.select_cancel = true
     init.run(nil, {})
-    eq(#rec.open + #rec.pctl, 0, "nothing opened or run")
+    eq(#rec.open + #rec.pj, 0, "nothing opened or run")
     eq(vim.fn.getcwd(0), root, "cwd unchanged")
   end)
 
   test("setup forwards opts to config", function()
-    init.setup({ pctl = "/custom/pctl" })
-    eq(require("pi-jail.config").get().pctl, "/custom/pctl", "config.setup called with opts")
+    init.setup({ pj = "/custom/pj" })
+    eq(require("pi-jail.config").get().pj, "/custom/pj", "config.setup called with opts")
   end)
 
   test("setup registers the focus-follow BufEnter autocmd", function()
@@ -538,7 +580,7 @@ else
   -- Teardown: restore every stubbed boundary.
   project.find_root = saved.find_root
   project.list_workspaces = saved.list_workspaces
-  ops.run_pctl = saved.run_pctl
+  ops.run_pj = saved.run_pj
   terminal.open_or_reuse = saved.open_or_reuse
   vim.ui.select = saved.select
   vim.ui.input = saved.input

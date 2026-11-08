@@ -24,6 +24,7 @@ local function eq(actual, expected, msg)
 end
 
 local function ok(cond, msg)
+  checks = checks + 1
   if not cond then
     failures = failures + 1
     print("FAIL: " .. msg)
@@ -53,9 +54,9 @@ local function test(name, fn)
   end
 end
 
--- Fixture: fake pi executable + start-marker file + a repo root dir.
--- `pi ws <name>` echoes "fake-agent <name>", `pi debug <name>` echoes
--- "fake-debug <name>"; both append "$PWD $1 $2" to the marker (one line per
+-- Fixture: fake pj executable + start-marker file + a repo root dir.
+-- `pj open <id>` echoes "fake-agent <id>", `pj debug <id>` echoes
+-- "fake-debug <id>"; both append "$PWD $1 $2" to the marker (one line per
 -- spawned job, so the marker doubles as a spawn counter and argv/cwd record)
 -- and sleep until killed.
 local fixture = nil
@@ -65,12 +66,12 @@ local function setup_fixture()
   local dir = "/tmp/pj-term-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
   os.execute("rm -rf " .. dir)
   os.execute("mkdir -p " .. dir .. "/root/ws " .. dir .. "/root/shared")
-  local script = dir .. "/pi"
+  local script = dir .. "/pj"
   local h = io.open(script, "w")
   h:write(([[
 #!/bin/sh
 case "$1" in
-  ws) echo "fake-agent $2" ;;
+  open) echo "fake-agent $2" ;;
   debug) echo "fake-debug $2" ;;
 esac
 echo "$PWD $1 $2" >> "%s/marker"
@@ -159,10 +160,10 @@ if terminal == nil or project == nil or config == nil then
   end)
 else
   setup_fixture()
-  config.setup({ pi = fixture.script })
+  config.setup({ pj = fixture.script })
   local root = fixture.root
 
-  local alpha = terminal.open_or_reuse("alpha", root)
+  local alpha = terminal.open_or_reuse("ws/alpha", root)
   opened[#opened + 1] = alpha
   local opened_gamma = nil -- set in the width test; column tests read it
   local opened_zeta = nil -- set in the second-terminal test; third-terminal test reads it
@@ -174,18 +175,19 @@ else
     eq(vim.api.nvim_get_option_value("buftype", { buf = alpha.bufnr }), "terminal", "buftype=terminal")
     ok(alpha.job_id > 0, "entry.job_id is a real job handle")
     ok(job_alive(alpha.job_id), "job alive right after open")
+    eq(alpha.ws, "ws/alpha", "entry carries the full ws id")
   end)
 
-  test("open_or_reuse runs <pi> ws <name> with cwd=root (default mode)", function()
-    ok(wait_for_marker(1), "fake pi wrote its start marker")
-    eq(marker_lines()[1], root .. " ws alpha", "marker records cwd, mode and ws name in order")
-    ok(wait_buf_contains(alpha.bufnr, "fake-agent alpha"), "terminal shows the agent banner")
+  test("open_or_reuse runs <pj> open <id> with cwd=root (default mode)", function()
+    ok(wait_for_marker(1), "fake pj wrote its start marker")
+    eq(marker_lines()[1], root .. " open ws/alpha", "marker records cwd, mode and ws id in order")
+    ok(wait_buf_contains(alpha.bufnr, "fake-agent ws/alpha"), "terminal shows the agent banner")
   end)
 
   test("second open_or_reuse for same ws reuses the same buffer and focuses its split", function()
     -- given alpha's terminal is open with a live job; when opened again;
     -- then the same buffer/job is reused and its split focused
-    local again = terminal.open_or_reuse("alpha", root)
+    local again = terminal.open_or_reuse("ws/alpha", root)
     opened[#opened + 1] = again
     eq(again.bufnr, alpha.bufnr, "same buffer reused")
     eq(again.job_id, alpha.job_id, "same job reused")
@@ -210,7 +212,7 @@ else
     ok(other_win ~= nil, "a window outside the terminal split exists")
     vim.api.nvim_set_current_win(other_win)
     -- when opened again; then the terminal's split is focused, no new job
-    local again = terminal.open_or_reuse("alpha", root)
+    local again = terminal.open_or_reuse("ws/alpha", root)
     opened[#opened + 1] = again
     eq(again.bufnr, alpha.bufnr, "same buffer reused")
     eq(vim.api.nvim_win_get_buf(0), alpha.bufnr, "terminal split focused from another window")
@@ -223,7 +225,7 @@ else
     vim.api.nvim_win_close(wins[1], true)
     eq(#vim.fn.win_findbuf(alpha.bufnr), 0, "window closed, buffer hidden")
     -- when opened again; then same buffer in a reopened split, still one job
-    local again = terminal.open_or_reuse("alpha", root)
+    local again = terminal.open_or_reuse("ws/alpha", root)
     opened[#opened + 1] = again
     eq(again.bufnr, alpha.bufnr, "same buffer reused after window close")
     ok(#vim.fn.win_findbuf(alpha.bufnr) > 0, "split reopened for the terminal")
@@ -231,18 +233,18 @@ else
     eq(#marker_lines(), 1, "still exactly one job for alpha")
   end)
 
-  test("mode 'debug' spawns <pi> debug <name>", function()
-    local dbg = terminal.open_or_reuse("beta", root, "debug")
+  test("mode 'debug' spawns <pj> debug <id>", function()
+    local dbg = terminal.open_or_reuse("ws/beta", root, "debug")
     opened[#opened + 1] = dbg
     local n0 = #marker_lines()
     ok(wait_for_marker(n0 + 1), "debug job wrote its marker")
-    eq(marker_lines()[#marker_lines()], root .. " debug beta", "marker records debug mode and ws name")
-    ok(wait_buf_contains(dbg.bufnr, "fake-debug beta"), "terminal shows the debug banner")
+    eq(marker_lines()[#marker_lines()], root .. " debug ws/beta", "marker records debug mode and ws id")
+    ok(wait_buf_contains(dbg.bufnr, "fake-debug ws/beta"), "terminal shows the debug banner")
   end)
 
   test("vertical split width is floor(columns * terminal.size)", function()
     eq(vim.o.columns, 100, "columns still 100 for the width computation")
-    local e = terminal.open_or_reuse("gamma", root)
+    local e = terminal.open_or_reuse("ws/gamma", root)
     opened[#opened + 1] = e
     opened_gamma = e
     local wins = vim.fn.win_findbuf(e.bufnr)
@@ -253,7 +255,7 @@ else
   test("second terminal opens below the first, same column width", function()
     -- given gamma's terminal open as a right-side vertical split; when a second
     -- workspace terminal opens; then it splits below, not into a new vertical
-    local zeta = terminal.open_or_reuse("zeta", root)
+    local zeta = terminal.open_or_reuse("ws/zeta", root)
     opened[#opened + 1] = zeta
     opened_zeta = zeta
     local gamma_wins = vim.fn.win_findbuf(opened_gamma.bufnr)
@@ -272,7 +274,7 @@ else
   end)
 
   test("third terminal extends the column below", function()
-    local eta = terminal.open_or_reuse("eta", root)
+    local eta = terminal.open_or_reuse("ws/eta", root)
     opened[#opened + 1] = eta
     local g = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_gamma.bufnr)[1])
     local z = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_zeta.bufnr)[1])
@@ -288,7 +290,7 @@ else
     local zeta_wins = vim.fn.win_findbuf(opened_zeta.bufnr)
     vim.api.nvim_win_close(zeta_wins[1], true)
     eq(#vim.fn.win_findbuf(opened_zeta.bufnr), 0, "zeta window closed, buffer hidden")
-    local again = terminal.open_or_reuse("zeta", root)
+    local again = terminal.open_or_reuse("ws/zeta", root)
     eq(again.bufnr, opened_zeta.bufnr, "same buffer reused")
     local w = vim.fn.win_findbuf(again.bufnr)[1]
     eq(vim.api.nvim_win_get_width(w), 40, "reopened split keeps the column width")
@@ -303,7 +305,7 @@ else
     -- then the split is closed and the buffer wiped
     config.setup({ terminal = { keep_on_exit = false } })
     local n0 = #marker_lines()
-    delta_entry = terminal.open_or_reuse("delta", root)
+    delta_entry = terminal.open_or_reuse("ws/delta", root)
     opened[#opened + 1] = delta_entry
     ok(wait_for_marker(n0 + 1), "delta job started")
     kill_job(delta_entry)
@@ -318,7 +320,7 @@ else
   test("keep_on_exit=false starts a fresh terminal on next open after exit", function()
     config.setup({ terminal = { keep_on_exit = false } })
     local n0 = #marker_lines()
-    local fresh = terminal.open_or_reuse("delta", root)
+    local fresh = terminal.open_or_reuse("ws/delta", root)
     opened[#opened + 1] = fresh
     ok(wait_for_marker(n0 + 1), "a new job started for delta")
     ok(fresh.job_id ~= delta_entry.job_id, "new job, not the dead one")
@@ -332,7 +334,7 @@ else
 
   test("keep_on_exit=true (default) keeps the buffer valid and displayed after job exit", function()
     local n0 = #marker_lines()
-    eps_entry = terminal.open_or_reuse("epsilon", root)
+    eps_entry = terminal.open_or_reuse("ws/epsilon", root)
     opened[#opened + 1] = eps_entry
     ok(wait_for_marker(n0 + 1), "epsilon job started")
     kill_job(eps_entry)
@@ -348,14 +350,16 @@ else
     -- given epsilon's job exited but keep_on_exit=true kept the buffer;
     -- when opened again; then the dead buffer is focused, no new job
     local n0 = #marker_lines()
-    local again = terminal.open_or_reuse("epsilon", root)
+    local again = terminal.open_or_reuse("ws/epsilon", root)
     opened[#opened + 1] = again
     eq(again.bufnr, eps_entry.bufnr, "same dead buffer reused")
     eq(#marker_lines(), n0, "no new job spawned")
     eq(vim.api.nvim_win_get_buf(0), eps_entry.bufnr, "dead terminal's split focused")
   end)
 
-  test("project.current_ws resolves the ws name from a buffer path", function()
+  test("project.current_ws resolves the bare ws name from a buffer path", function()
+    -- list_workspaces/current_ws keep returning bare names by design (jj-shaped);
+    -- the ws/ prefix is composed by their callers.
     local cases = {
       { root .. "/ws/alpha/main.lua", "alpha" },
       { root .. "/ws/alpha", "alpha" },

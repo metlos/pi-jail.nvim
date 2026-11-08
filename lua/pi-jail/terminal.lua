@@ -1,9 +1,10 @@
 -- pi-jail.terminal: one interactive agent terminal per workspace, reused across
 -- invocations so the agent session survives.
 --
--- The terminal runs `<pi> <mode> <ws>` (mode "ws" = agent TUI, "debug" = jail
--- shell) via termopen, cwd = adopted repo root. The buffer is registered per
--- workspace name and reused while its job lives; a dead buffer is reused only
+-- The terminal runs `<pj> <mode> <ws>` (mode "open" = agent TUI, "debug" = jail
+-- shell — both literal pj subcommands) via termopen, cwd = adopted repo root.
+-- ws is the full workspace id "ws/<name>". The buffer is registered per
+-- workspace id and reused while its job lives; a dead buffer is reused only
 -- when config.terminal.keep_on_exit kept it. chdir'ing into the workspace is
 -- the caller's (init.lua) job; only the terminal lifecycle lives here.
 --
@@ -15,7 +16,7 @@ local config = require("pi-jail.config")
 
 local M = {}
 
--- ws_name -> { bufnr, job_id, root } for every terminal ever created here.
+-- ws id ("ws/<name>") -> { bufnr, job_id, root } for every terminal ever created here.
 M.registry = {}
 
 local function job_alive(job_id)
@@ -31,7 +32,7 @@ end
 local function cleanup(entry)
   close_windows(entry.bufnr)
   vim.api.nvim_buf_delete(entry.bufnr, { force = true })
-  M.registry[entry.ws_name] = nil
+  M.registry[entry.ws] = nil
 end
 
 -- The bottom-most window in this tabpage displaying a registered terminal
@@ -70,18 +71,18 @@ local function open_split(bufnr)
   return win
 end
 
-local function spawn(ws_name, root, mode)
+local function spawn(ws, root, mode)
   local bufnr = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_current_win(open_split(bufnr))
   -- termopen attaches to the current buffer, which is bufnr in its new split.
   -- job_id is pre-declared so the on_exit closure captures the local, not a global.
   local job_id
-  job_id = vim.fn.termopen({ config.get().pi, mode, ws_name }, {
+  job_id = vim.fn.termopen({ config.get().pj, mode, ws }, {
     cwd = root,
     on_exit = function()
       -- Defer: lets TermClose settle before closing/wiping the buffer.
       vim.schedule(function()
-        local entry = M.registry[ws_name]
+        local entry = M.registry[ws]
         if entry ~= nil and entry.job_id == job_id and not config.get().terminal.keep_on_exit then
           cleanup(entry)
         end
@@ -89,8 +90,8 @@ local function spawn(ws_name, root, mode)
     end,
   })
   vim.cmd("startinsert")
-  local entry = { ws_name = ws_name, bufnr = bufnr, job_id = job_id, root = root }
-  M.registry[ws_name] = entry
+  local entry = { ws = ws, bufnr = bufnr, job_id = job_id, root = root }
+  M.registry[ws] = entry
   return entry
 end
 
@@ -106,16 +107,16 @@ function M.entry_for_buf(bufnr)
   return nil
 end
 
----Open (or reuse) the terminal for workspace ws_name.
+---Open (or reuse) the terminal for workspace ws.
 ---Reuses a live terminal's buffer and split; a dead one only when
 ---config.terminal.keep_on_exit kept it around, else starts fresh.
----@param ws_name string workspace (worktree) name
+---@param ws string workspace id "ws/<name>"
 ---@param root string adopted repo root, used as the process cwd
----@param mode string|nil "ws" (agent, default) or "debug" (jail shell)
----@return table entry { ws_name, bufnr, job_id }
-function M.open_or_reuse(ws_name, root, mode)
-  mode = mode or "ws"
-  local entry = M.registry[ws_name]
+---@param mode string|nil "open" (agent, default) or "debug" (jail shell)
+---@return table entry { ws, bufnr, job_id }
+function M.open_or_reuse(ws, root, mode)
+  mode = mode or "open"
+  local entry = M.registry[ws]
   if entry ~= nil and vim.api.nvim_buf_is_valid(entry.bufnr) then
     if job_alive(entry.job_id) or config.get().terminal.keep_on_exit then
       -- Existing terminal (live, or dead-but-kept): focus (or reopen) its split.
@@ -133,7 +134,7 @@ function M.open_or_reuse(ws_name, root, mode)
     -- in practice, but never hand back a dead buffer as a live terminal.
     cleanup(entry)
   end
-  return spawn(ws_name, root, mode)
+  return spawn(ws, root, mode)
 end
 
 return M

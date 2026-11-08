@@ -53,7 +53,7 @@ local function test(name, fn)
   end
 end
 
--- Fixture: fake pi executable (banner + sleep forever) and a repo root with
+-- Fixture: fake pj executable (banner + sleep forever) and a repo root with
 -- two workspace dirs. No marker needed: follow never inspects the job.
 local fixture = nil
 local opened = {} -- every entry ever opened, for teardown
@@ -63,7 +63,7 @@ local function setup_fixture()
   local dir = "/tmp/pj-follow-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
   os.execute("rm -rf " .. dir)
   os.execute("mkdir -p " .. dir .. "/root/ws/alpha " .. dir .. "/root/ws/beta")
-  local script = dir .. "/pi"
+  local script = dir .. "/pj"
   local h = io.open(script, "w")
   h:write("#!/bin/sh\necho \"fake-$1-$2\"\nwhile :; do sleep 0.2; done\n")
   h:close()
@@ -124,7 +124,7 @@ if follow == nil or terminal == nil or config == nil then
   end)
 else
   setup_fixture()
-  config.setup({ pi = fixture.script, terminal = { keep_on_exit = true } })
+  config.setup({ pj = fixture.script, terminal = { keep_on_exit = true } })
   detour_buf = vim.api.nvim_create_buf(false, true)
   local root = fixture.root
   local alpha_dir = root .. "/ws/alpha"
@@ -144,11 +144,11 @@ else
 
   test("entry_for_buf maps a registered buffer to its entry, root included", function()
     -- given a terminal for alpha; when looked up by buffer; then its entry
-    alpha = terminal.open_or_reuse("alpha", root)
+    alpha = terminal.open_or_reuse("ws/alpha", root)
     opened[#opened + 1] = alpha
     local entry = terminal.entry_for_buf(alpha.bufnr)
     ok(entry ~= nil, "entry found for alpha's terminal buffer")
-    eq(entry.ws_name, "alpha", "entry is alpha's")
+    eq(entry.ws, "ws/alpha", "entry is alpha's")
     eq(entry.root, root, "entry carries the repo root")
     local scratch = vim.api.nvim_create_buf(false, true)
     eq(terminal.entry_for_buf(scratch), nil, "unknown buffer maps to nil")
@@ -192,7 +192,7 @@ else
   test("focus-follow also applies to debug terminals", function()
     -- given a debug terminal for beta and cwd at root;
     vim.cmd("cd " .. vim.fn.fnameescape(root))
-    dbg = terminal.open_or_reuse("beta", root, "debug")
+    dbg = terminal.open_or_reuse("ws/beta", root, "debug")
     opened[#opened + 1] = dbg
     -- when its buffer gains focus; then cwd moves into beta's ws
     focus(dbg.bufnr)

@@ -1,4 +1,4 @@
--- Spec for pi-jail.config + pi-jail.ops: setup/merge and run_pctl against a fake pctl.
+-- Spec for pi-jail.config + pi-jail.ops: setup/merge and run_pj against a fake pj.
 -- Signals failure via `vim.cmd("cq")` after counting failures; run.sh greps the exit code.
 
 local failures = 0
@@ -23,6 +23,7 @@ local function eq(actual, expected, msg)
 end
 
 local function ok(cond, msg)
+  checks = checks + 1
   if not cond then
     failures = failures + 1
     print("FAIL: " .. msg)
@@ -52,7 +53,7 @@ local function test(name, fn)
   end
 end
 
--- Fixture: fake pctl executable + recording marker dir + a root dir to run in.
+-- Fixture: fake pj executable + recording marker dir + a root dir to run in.
 -- The script records "$PWD $*" to <dir>/record, and fails with a stderr message
 -- when <dir>/fail marker exists.
 local fixture = nil
@@ -61,12 +62,12 @@ local function setup_fixture()
   local dir = "/tmp/pj-ops-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
   os.execute("rm -rf " .. dir)
   os.execute("mkdir -p " .. dir .. "/root/ws " .. dir .. "/root/shared")
-  local script = dir .. "/pctl"
+  local script = dir .. "/pj"
   local h = io.open(script, "w")
   h:write(([[
 #!/bin/sh
 if [ -e "%s/fail" ]; then
-  echo "pctl: simulated failure" >&2
+  echo "pj: simulated failure" >&2
   exit 1
 fi
 echo "$PWD $*" > "%s/record"
@@ -95,7 +96,7 @@ local function read_record()
   return out
 end
 
-print("=== test_ops_spec: config setup/merge + ops.run_pctl ===")
+print("=== test_ops_spec: config setup/merge + ops.run_pj ===")
 
 local config, config_err = load_module("pi-jail.config")
 local ops, ops_err = load_module("pi-jail.ops")
@@ -117,24 +118,25 @@ else
     ok(type(config.get()) == "table", "config.get() returns a table")
   end)
 
-  test("config defaults: pctl, pi, terminal", function()
+  test("config defaults: pj, terminal", function()
     local cfg = config.get()
-    eq(cfg.pctl, "pctl", "default pctl executable")
-    eq(cfg.pi, "pi", "default pi executable")
+    eq(cfg.pj, "pj", "default pj executable")
+    eq(cfg.pctl, nil, "legacy pctl key is gone")
+    eq(cfg.pi, nil, "legacy pi key is gone")
     eq(cfg.terminal.keep_on_exit, true, "default terminal.keep_on_exit")
     eq(cfg.terminal.size, 0.4, "default terminal.size")
   end)
 
   setup_fixture()
 
-  test("config.setup overrides pctl executable", function()
-    config.setup({ pctl = fixture.script })
-    eq(config.get().pctl, fixture.script, "setup overrides pctl")
+  test("config.setup overrides pj executable", function()
+    config.setup({ pj = fixture.script })
+    eq(config.get().pj, fixture.script, "setup overrides pj")
   end)
 
   test("config.setup merges: later setup keeps unspecified keys and merges nested tables", function()
     config.setup({ terminal = { size = 0.2 } })
-    eq(config.get().pctl, fixture.script, "later setup keeps pctl from earlier setup")
+    eq(config.get().pj, fixture.script, "later setup keeps pj from earlier setup")
     eq(config.get().terminal.size, 0.2, "later setup overrides nested terminal.size")
     eq(config.get().terminal.keep_on_exit, true, "later setup keeps sibling terminal.keep_on_exit")
   end)
@@ -146,40 +148,40 @@ else
     fresh.setup({ terminal = { size = 0.25 } })
     eq(fresh.get().terminal.size, 0.25, "fresh setup overrides terminal.size")
     eq(fresh.get().terminal.keep_on_exit, true, "fresh setup keeps terminal.keep_on_exit default")
-    eq(fresh.get().pctl, "pctl", "fresh setup keeps default pctl")
+    eq(fresh.get().pj, "pj", "fresh setup keeps default pj")
     eq(fresh.get().dir_change_scope, "cd", "fresh setup keeps default dir_change_scope")
   end)
 
-  test("run_pctl returns ok result with empty stderr on success", function()
-    config.setup({ pctl = fixture.script })
-    local res = ops.run_pctl({ "fill", "alpha" }, fixture.root)
+  test("run_pj returns ok result with empty stderr on success", function()
+    config.setup({ pj = fixture.script })
+    local res = ops.run_pj({ "fill", "ws/alpha" }, fixture.root)
     eq(res.ok, true, "ok=true on exit 0")
     eq(res.code, 0, "code=0 on success")
     eq(res.stderr, "", "stderr empty on success")
     eq(res.stdout, "", "stdout empty when command prints nothing")
   end)
 
-  test("run_pctl passes args in order and cwd=root", function()
-    ops.run_pctl({ "new", "gamma", "--extra" }, fixture.root)
+  test("run_pj passes args in order and cwd=root", function()
+    ops.run_pj({ "drop", "--force", "ws/alpha" }, fixture.root)
     local rec = read_record()
-    check(rec ~= nil, "fake pctl recorded its invocation")
+    check(rec ~= nil, "fake pj recorded its invocation")
     if rec ~= nil then
-      eq(rec, fixture.root .. " new gamma --extra", "recorded '$PWD $*' shows root and args in order")
+      eq(rec, fixture.root .. " drop --force ws/alpha", "recorded '$PWD $*' shows root and args in order")
     end
   end)
 
-  test("run_pctl failure returns ok=false with stderr verbatim", function()
+  test("run_pj failure returns ok=false with stderr verbatim", function()
     os.execute("touch " .. fixture.dir .. "/fail")
-    local res = ops.run_pctl({ "drop", "--force", "alpha" }, fixture.root)
+    local res = ops.run_pj({ "drop", "--force", "ws/alpha" }, fixture.root)
     os.execute("rm -f " .. fixture.dir .. "/fail")
     eq(res.ok, false, "ok=false on nonzero exit")
     eq(res.code, 1, "code passed through")
     check(
-      res.stderr:find("pctl: simulated failure", 1, true) ~= nil,
+      res.stderr:find("pj: simulated failure", 1, true) ~= nil,
       "stderr contains failure message (verbatim, incl. trailing newline)"
     )
-    eq(res.stderr, "pctl: simulated failure\n", "stderr verbatim incl. trailing newline")
-    check(read_record() == nil, "failing fake pctl does not record")
+    eq(res.stderr, "pj: simulated failure\n", "stderr verbatim incl. trailing newline")
+    check(read_record() == nil, "failing fake pj does not record")
   end)
 
   teardown_fixture()

@@ -1,19 +1,19 @@
 # pi-jail.nvim
 
-Neovim plugin for pi-jail repositories: jj repos adopted by `pctl`, where every workspace lives as a worktree under
+Neovim plugin for pi-jail repositories: jj repos adopted by `pj`, where every workspace lives as a worktree under
 `ws/` with shared state in `shared/`.
 
 It gives you:
 
 - `:Pj [ws]` — enter a workspace: change the cwd to `ws/<name>` and open the pi coding agent there in a persistent
   terminal (reused across invocations, one per workspace).
-- `:Pj debug` — a jail shell (`pi debug`) for the workspace your buffer is in.
-- `:Pj new` / `:Pj fill` / `:Pj drop` — thin, confirmed wrappers around the matching `pctl` commands.
+- `:Pj debug` — a jail shell (`pj debug`) for the workspace your buffer is in.
+- `:Pj new` / `:Pj fill` / `:Pj drop` — thin, confirmed wrappers around the matching `pj` commands.
 
 ## Requirements
 
 - Neovim >= 0.9 (`vim.ui.select`/`vim.ui.input`, `vim.system`)
-- `pctl` and `pi` on your `PATH` (or configured, see below)
+- `pj` on your `PATH` (or configured, see below)
 - `jj` on your `PATH` (workspace listing)
 
 ## Setup
@@ -36,28 +36,33 @@ require("pi-jail").setup({})
 
 ## Commands
 
-All commands resolve the repo root from the current working directory (walking up to the nearest `pctl`-adopted jj
+All commands resolve the repo root from the current working directory (walking up to the nearest `pj`-adopted jj
 repo). Outside a project they notify an error and do nothing.
 
-| Command           | Action                                                             |
-| ----------------- | ------------------------------------------------------------------ |
-| `:Pj`             | Pick a workspace (`vim.ui.select`, dirty ones shown as `name *`)   |
-| `:Pj ws [name]`   | Enter workspace `name` (picker when omitted)                       |
-| `:Pj new [name]`  | `pctl new` — create a workspace (prompt for the name when omitted) |
-| `:Pj drop [name]` | `pctl drop` with confirm; offers `--force` on unlanded work        |
-| `:Pj fill [name]` | `pctl fill` for the buffer's workspace (picker fallback)           |
-| `:Pj debug`       | Jail shell for the buffer's workspace (picker fallback)            |
+Workspace arguments use the `ws/<name>` form, matching `pj`'s shell completion (`:Pj open ws/mytask`). Unlike `pj`
+itself, the plugin does not accept the bare `name` form — anything else is rejected with an error notification before
+anything runs.
+
+| Command              | Action                                                              |
+| -------------------- | ------------------------------------------------------------------- |
+| `:Pj`                | Pick a workspace (`vim.ui.select`, dirty ones shown as `ws/name *`) |
+| `:Pj open [ws/name]` | Enter workspace `ws/name` (picker when omitted)                     |
+| `:Pj new [ws/name]`  | `pj new` — create a workspace (prompt for the id when omitted)      |
+| `:Pj drop [ws/name]` | `pj drop` with confirm; offers `--force` on unlanded work           |
+| `:Pj fill [ws/name]` | `pj fill` for the buffer's workspace (picker fallback)              |
+| `:Pj debug`          | Jail shell for the buffer's workspace (picker fallback)             |
 
 Details:
 
-- **Enter** (`:Pj`, `:Pj ws`): change the working directory into `ws/<name>` first, then open/reuse the workspace's
-  agent terminal. `ws/<name>` is a normal terminal buffer; the agent keeps running while you edit in other splits.
+- **Enter** (`:Pj`, `:Pj open`): change the working directory into `ws/<name>` first, then open/reuse the workspace's
+  agent terminal (`pj open`). `ws/<name>` is a normal terminal buffer; the agent keeps running while you edit in other
+  splits.
 - **Focus-follow**: focusing a workspace terminal's split chdirs back into that workspace (same scope as Enter), so a
   cwd-bound sidebar always reflects the workspace you are looking at. Focusing the dead-but-kept terminal of an exited
   agent still follows; focusing away from a terminal never changes the cwd.
 - **New** creates the workspace only: no chdir, no agent start.
-- **Drop** always confirms (`Drop ws/<name>?`). If `pctl drop` reports unlanded work, a second confirm offers `--force`.
-  Success and failure are surfaced with `vim.notify` (failure shows pctl's stderr verbatim).
+- **Drop** always confirms (`Drop ws/<name>?`). If `pj drop` reports unlanded work, a second confirm offers `--force`.
+  Success and failure are surfaced with `vim.notify` (failure shows pj's stderr verbatim).
 
 ## Configuration
 
@@ -65,8 +70,7 @@ Defaults:
 
 ```lua
 require("pi-jail").setup({
-  pctl = "pctl", -- pctl executable (name on PATH, or an absolute path)
-  pi = "pi", -- pi executable (name on PATH, or an absolute path) - this is the script defined from pi-jail, not the actual Pi agent
+  pj = "pj", -- pj executable (name on PATH, or an absolute path)
   dir_change_scope = "cd", -- ":cd" (global) or ":tcd" (tab-local) when entering a ws
   terminal = {
     keep_on_exit = true, -- keep the split + buffer around after the agent exits
@@ -95,4 +99,4 @@ bash tests/run.sh
 ```
 
 Runs every `tests/test_*_spec.lua` in headless nvim. Specs are dependency-free Lua files; each exercises the module
-against fakes (fake `pctl`/`pi` shell scripts, real `jj` scratch repos in `/tmp`).
+against fakes (fake `pj` shell scripts, real `jj` scratch repos in `/tmp`).

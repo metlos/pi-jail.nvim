@@ -3,8 +3,7 @@
 local M = {}
 
 local defaults = {
-  pctl = "pctl",
-  pi = "pi",
+  pj = "pj",
   -- "cd" (global, so cwd-bound plugins like a neo-tree sidebar follow along)
   -- or "tcd" (tab-local, so other tabs keep their cwd).
   dir_change_scope = "cd",

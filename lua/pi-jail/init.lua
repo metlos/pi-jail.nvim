@@ -3,11 +3,14 @@
 -- notifications) and holds no business logic of its own.
 --
 -- Subcommands:
---   :Pj [ws [name]]  pick or name a workspace: set cwd into it + agent terminal
---   :Pj new [name]   pctl new (create only: no chdir, no agent)
---   :Pj drop [name]  pctl drop with confirm + unlanded-work --force flow
---   :Pj fill [name]  pctl fill, targeting the buffer's workspace by default
---   :Pj debug        jail shell for the buffer's workspace (picker fallback)
+--   :Pj [open [ws/name]]  pick or name a workspace: chdir into it + agent terminal
+--   :Pj new [ws/name]      pj new (create only: no chdir, no agent)
+--   :Pj drop [ws/name]     pj drop with confirm + unlanded-work --force flow
+--   :Pj fill [ws/name]     pj fill, targeting the buffer's workspace by default
+--   :Pj debug              jail shell for the buffer's workspace (picker fallback)
+--
+-- Workspace ids are always the relative path form "ws/<name>" (like pj's own
+-- shell completion); the bare-name form is not accepted.
 
 local config = require("pi-jail.config")
 local ops = require("pi-jail.ops")
@@ -17,11 +20,22 @@ local follow = require("pi-jail.follow")
 
 local M = {}
 
-local SUBCOMMANDS = { "ws", "new", "drop", "fill", "debug" }
+local SUBCOMMANDS = { "open", "new", "drop", "fill", "debug" }
 
----Notify a pctl result: subject one-liner on success, stderr verbatim on failure.
----@param res table ops.run_pctl result { ok, stdout, stderr, code }
----@param subject string success message, e.g. "pctl new ws/gamma"
+---Validate a user-supplied workspace id: must be "ws/<name>" with a single
+---path segment that is neither "." nor "..". pj stays the authority for
+---everything beyond the shape (bracket-like names etc.); its stderr surfaces
+---verbatim when it rejects them.
+---@param id string|nil
+---@return boolean valid
+local function valid_ws_id(id)
+  local name = id:match("^ws/([^/]+)$")
+  return name ~= nil and name ~= "." and name ~= ".."
+end
+
+---Notify a pj result: subject one-liner on success, stderr verbatim on failure.
+---@param res table ops.run_pj result { ok, stdout, stderr, code }
+---@param subject string success message, e.g. "pj new ws/gamma"
 local function notify_result(res, subject)
   if res.ok then
     vim.notify(subject, vim.log.levels.INFO)
@@ -35,15 +49,15 @@ end
 local function resolve_root()
   local root = project.find_root(vim.loop.cwd())
   if root == nil then
-    vim.notify("not a pi-jail project: no pctl-adopted jj repo above " .. vim.loop.cwd(), vim.log.levels.ERROR)
+    vim.notify("not a pi-jail project: no pj-adopted jj repo above " .. vim.loop.cwd(), vim.log.levels.ERROR)
   end
   return root
 end
 
----Workspace picker: "name" / "name *" items, current-ws highlighted via
----list_workspaces' flags. Cancelled picks do nothing.
+---Workspace picker: "ws/name" / "ws/name *" items (jj's bare names get the
+---path prefix composed here). Cancelled picks do nothing.
 ---@param root string
----@param on_choice fun(name: string)
+---@param on_choice fun(id: string)
 local function pick_ws(root, on_choice)
   local wss = project.list_workspaces(root)
   if wss == nil then
@@ -56,7 +70,7 @@ local function pick_ws(root, on_choice)
   end
   local items = {}
   for _, ws in ipairs(wss) do
-    items[#items + 1] = ws.name .. (ws.dirty and " *" or "")
+    items[#items + 1] = "ws/" .. ws.name .. (ws.dirty and " *" or "")
   end
   vim.ui.select(items, { prompt = "pi-jail workspace:" }, function(choice)
     if choice ~= nil then
@@ -68,88 +82,108 @@ end
 ---Set the workspace cwd (scope from config.dir_change_scope: "cd" global
 ---or "tcd" tab-local) and open the workspace's terminal. chdir happens first
 ---so a spawned agent inherits it.
----@param name string workspace name
+---@param id string workspace id "ws/<name>"
 ---@param root string adopted repo root
----@param mode string "ws" (agent) or "debug" (jail shell)
-local function enter_ws(name, root, mode)
-  local ws_dir = root .. "/ws/" .. name
+---@param mode string "open" (agent) or "debug" (jail shell)
+local function enter_ws(id, root, mode)
+  local ws_dir = root .. "/" .. id
   if vim.fn.isdirectory(ws_dir) ~= 1 then
-    vim.notify("ws/" .. name .. " does not exist (create it with :Pj new)", vim.log.levels.ERROR)
+    vim.notify(id .. " does not exist (create it with :Pj new)", vim.log.levels.ERROR)
     return
   end
   vim.cmd(config.get().dir_change_scope .. " " .. vim.fn.fnameescape(ws_dir))
-  terminal.open_or_reuse(name, root, mode)
+  terminal.open_or_reuse(id, root, mode)
 end
 
-local function run_new(name, root)
-  notify_result(ops.run_pctl({ "new", name }, root), "pctl new ws/" .. name)
+local function run_new(id, root)
+  notify_result(ops.run_pj({ "new", id }, root), "pj new " .. id)
 end
 
----@param name string
+---@param id string
 ---@param root string
----@param force boolean retry pass: append --force
-local function run_drop(name, root, force)
-  local args = force and { "drop", name, "--force" } or { "drop", name }
-  local subject = "pctl drop ws/" .. name .. (force and " --force" or "")
-  local res = ops.run_pctl(args, root)
+---@param force boolean retry pass: prepend --force (pj wants it before the name)
+local function run_drop(id, root, force)
+  local args = force and { "drop", "--force", id } or { "drop", id }
+  local subject = "pj drop " .. (force and "--force " or "") .. id
+  local res = ops.run_pj(args, root)
   if res.ok then
     vim.notify(subject, vim.log.levels.INFO)
   elseif not force and res.stderr:find("unlanded work", 1, true) then
-    local prompt = ("ws/%s has unlanded work. Drop anyway (--force)?"):format(name)
+    local prompt = ("%s has unlanded work. Drop anyway (--force)?"):format(id)
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1 then
-      run_drop(name, root, true)
+      run_drop(id, root, true)
     end
   else
     vim.notify(res.stderr, vim.log.levels.ERROR)
   end
 end
 
-local function run_fill(name, root)
-  notify_result(ops.run_pctl({ "fill", name }, root), "pctl fill ws/" .. name)
+local function run_fill(id, root)
+  notify_result(ops.run_pj({ "fill", id }, root), "pj fill " .. id)
 end
 
----Workspace the current buffer lives in, or nil (picker fallback for callers).
+---Workspace id for the current buffer ("ws/<name>"), or nil (picker fallback).
 ---@param root string
----@return string|nil name
+---@return string|nil id
 local function buffer_ws(root)
   local path = vim.api.nvim_buf_get_name(0)
   if path == "" then
     return nil
   end
-  return project.current_ws(root, path)
+  local name = project.current_ws(root, path)
+  return name ~= nil and "ws/" .. name or nil
+end
+
+---Notify a bad user-supplied workspace id and return false.
+---@param id string
+---@return boolean ok
+local function check_ws_id(id)
+  if valid_ws_id(id) then
+    return true
+  end
+  vim.notify("expected ws/<name>: " .. id, vim.log.levels.ERROR)
+  return false
 end
 
 local function cmd_new(args, root)
   if args[1] ~= nil then
-    run_new(args[1], root)
+    if check_ws_id(args[1]) then
+      run_new(args[1], root)
+    end
     return
   end
-  vim.ui.input({ prompt = "new workspace name: " }, function(input)
+  vim.ui.input({ prompt = "new workspace (ws/<name>): " }, function(input)
     if input ~= nil and input ~= "" then
-      run_new(input, root)
+      if check_ws_id(input) then
+        run_new(input, root)
+      end
     end
   end)
 end
 
 local function cmd_drop(args, root)
-  -- Dropping is destructive: confirm no matter how the name was resolved.
-  local function proceed(name)
-    local prompt = ("Drop ws/%s?"):format(name)
+  -- Dropping is destructive: confirm no matter how the id was resolved.
+  local function proceed(id)
+    local prompt = ("Drop %s?"):format(id)
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1 then
-      run_drop(name, root, false)
+      run_drop(id, root, false)
     end
   end
   if args[1] ~= nil then
-    proceed(args[1])
+    if check_ws_id(args[1]) then
+      proceed(args[1])
+    end
   else
     pick_ws(root, proceed)
   end
 end
 
 local function cmd_fill(args, root)
-  local name = args[1] or buffer_ws(root)
-  if name ~= nil then
-    run_fill(name, root)
+  local id = args[1] or buffer_ws(root)
+  if id ~= nil then
+    if check_ws_id(id) then
+      run_fill(id, root)
+    end
   else
     pick_ws(root, function(n)
       run_fill(n, root)
@@ -158,9 +192,9 @@ local function cmd_fill(args, root)
 end
 
 local function cmd_debug(root)
-  local name = buffer_ws(root)
-  if name ~= nil then
-    enter_ws(name, root, "debug")
+  local id = buffer_ws(root)
+  if id ~= nil then
+    enter_ws(id, root, "debug")
   else
     pick_ws(root, function(n)
       enter_ws(n, root, "debug")
@@ -177,12 +211,14 @@ function M.run(sub, args)
     return
   end
   args = args or {}
-  if sub == nil or sub == "ws" then
-    if sub == "ws" and args[1] ~= nil then
-      enter_ws(args[1], root, "ws")
+  if sub == nil or sub == "open" then
+    if sub == "open" and args[1] ~= nil then
+      if check_ws_id(args[1]) then
+        enter_ws(args[1], root, "open")
+      end
     else
-      pick_ws(root, function(name)
-        enter_ws(name, root, "ws")
+      pick_ws(root, function(id)
+        enter_ws(id, root, "open")
       end)
     end
   elseif sub == "new" then
@@ -198,7 +234,7 @@ function M.run(sub, args)
   end
 end
 
----Plugin setup: forwards opts to config (pctl, pi, terminal.keep_on_exit,
+---Plugin setup: forwards opts to config (pj, terminal.keep_on_exit,
 ---terminal.size), then registers the focus-follow autocmd.
 ---@param opts table|nil
 function M.setup(opts)

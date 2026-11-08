@@ -71,7 +71,8 @@ local function load_project()
   return mod
 end
 
--- Fixture: adopted pi-jail repo (jj root has ws/ and shared/) with two workspaces.
+-- Fixture: adopted pi-jail repo (pj layout: narrowed jj root with ws/ and
+-- shared/, workspaces with full sparse) with two workspaces.
 local fixture = nil
 
 local function setup_fixture()
@@ -87,12 +88,18 @@ local function setup_fixture()
   sh("mkdir -p " .. root .. "/ws")
   sh("(cd " .. root .. " && jj workspace add --colocate -r @ " .. root .. "/ws/alpha)")
   sh("(cd " .. root .. " && jj workspace add --colocate -r @ " .. root .. "/ws/beta)")
-  sh("mkdir -p " .. root .. "/shared/project")
-  sh("mkdir -p " .. root .. "/ws/alpha/sub")
   -- Dirty marker in beta: jj only snapshots a workspace's working copy when a
   -- command runs inside it, so trigger the snapshot from within ws/beta.
+  -- Before the root narrows: after it, the ws/ subtree is outside the root's
+  -- sparse pattern and root-run jj commands cannot see the file at all.
   sh("touch " .. root .. "/ws/beta/dirty.txt")
   sh("(cd " .. root .. "/ws/beta && jj st)")
+  -- pj init's adoption marks: ws/ dir + root narrowed to a ws-only sparse
+  -- pattern (the plugin's find_root mirrors pj's is_root: ws/ or shared/
+  -- present, .jj/repo a real dir, and a narrowed root sparse pattern).
+  sh("(cd " .. root .. " && jj sparse set --clear --add ws)")
+  sh("mkdir -p " .. root .. "/shared/project")
+  sh("mkdir -p " .. root .. "/ws/alpha/sub")
   fixture = { root = root, sh = sh }
   return fixture
 end
@@ -145,6 +152,47 @@ else
     fixture.sh("jj git init --colocate " .. plain)
     eq(project.find_root(plain), nil, "find_root(plain jj repo)")
     os.execute("rm -rf " .. plain)
+  end)
+
+  test("find_root matches pj is_root: ws/ only (no shared/) still adopts", function()
+    -- pj accepts either layout dir as the adoption mark.
+    local ws_only = "/tmp/pj-wsonly-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
+    os.execute("rm -rf " .. ws_only)
+    fixture.sh("jj git init --colocate " .. ws_only)
+    fixture.sh("(cd " .. ws_only .. " && jj sparse set --clear --add ws)")
+    fixture.sh("mkdir -p " .. ws_only .. "/ws")
+    eq(project.find_root(ws_only), ws_only, "find_root(ws/-only adopted repo)")
+    os.execute("rm -rf " .. ws_only)
+  end)
+
+  test("find_root matches pj is_root: shared/ only (no ws/) still adopts", function()
+    local shared_only = "/tmp/pj-sharedonly-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
+    os.execute("rm -rf " .. shared_only)
+    fixture.sh("jj git init --colocate " .. shared_only)
+    fixture.sh("(cd " .. shared_only .. " && jj sparse set --clear --add ws)")
+    fixture.sh("mkdir -p " .. shared_only .. "/shared")
+    eq(project.find_root(shared_only), shared_only, "find_root(shared/-only adopted repo)")
+    os.execute("rm -rf " .. shared_only)
+  end)
+
+  test("find_root matches pj is_root: full-checkout look-alike is not a root", function()
+    -- A plain jj repo with ws/ + shared/ dirs but a full sparse checkout: pj
+    -- rejects it (shared/ is a common name; adoption also narrows the root).
+    local lookalike = "/tmp/pj-lookalike-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
+    os.execute("rm -rf " .. lookalike)
+    fixture.sh("jj git init --colocate " .. lookalike)
+    fixture.sh("mkdir -p " .. lookalike .. "/ws " .. lookalike .. "/shared")
+    eq(project.find_root(lookalike), nil, "find_root(full-checkout look-alike)")
+    os.execute("rm -rf " .. lookalike)
+  end)
+
+  test("find_root matches pj is_root: .jj/repo pointer file is not a root", function()
+    -- An added workspace's .jj/repo is a pointer file, not a real dir; a
+    -- look-alike ws/ layout below it must not be mistaken for a root.
+    local nested = root .. "/ws/alpha/sub"
+    fixture.sh("mkdir -p " .. nested)
+    fixture.sh("cp " .. root .. "/ws/alpha/.jj/repo " .. nested .. "/.jj-repo-pointer 2>/dev/null || true")
+    eq(project.find_root(nested), root, "find_root below a workspace stays at the true root")
   end)
 
   test("list_workspaces parses names, excludes default, marks empty (clean)", function()

@@ -11,7 +11,7 @@ local GROUP = "pi-jail-follow"
 
 ---Chdir into the entry's workspace unless the cwd already matches.
 local function follow_entry(entry)
-  local ws_dir = entry.root .. "/ws/" .. entry.ws_name
+  local ws_dir = entry.root .. "/" .. entry.ws
   if vim.fn.getcwd() ~= ws_dir then
     vim.cmd(config.get().dir_change_scope .. " " .. vim.fn.fnameescape(ws_dir))
   end
