@@ -5,10 +5,11 @@ Neovim plugin for pi-jail repositories: jj repos adopted by `pj`, where every wo
 
 It gives you:
 
-- `:Pj [ws]` — enter a workspace: opens it in its own named tab (label `ws/<name>`) with the pi coding agent in a
-  persistent terminal inside it (reused across invocations, one per workspace). Closing the tab keeps the agent alive;
-  a later `:Pj open` re-attaches it in a fresh tab.
-- `:Pj new` / `:Pj fill` / `:Pj drop` — thin, confirmed wrappers around the matching `pj` commands.
+- `:Pj` / `:Pj open [ws/name]` — enter a workspace: opens it in its own named tab (label `ws/<name>`) with the pi
+  coding agent in a persistent terminal inside it (reused across invocations, one per workspace). Closing the tab
+  keeps the agent alive; a later `:Pj open ws/name` re-attaches it in a fresh tab.
+- `:Pj new [ws/name]` / `:Pj fill [ws/name]` / `:Pj drop [ws/name]` — thin wrappers around the matching `pj`
+  commands (`drop` always confirms and offers `--force` on unlanded work).
 
 ## Requirements
 
@@ -111,11 +112,24 @@ require("bufferline").setup({
 (Without the pcall, non-jail tabs would error bufferline into its fallback label; returning `nil` keeps their default
 name.)
 
+This only shows tabs in the bufferline, named after the workspaces, which may or may not
+suit your workflow. Accommodate accordingly.
+
 ## Plugin interop
 
-Entering a workspace no longer fires a global `:cd`: the chdir is tab-local (`tcd`), and `DirChanged` fires with tab
-scope. Cwd-following plugins should watch the tab scope instead — for neo-tree, `cwd_target.sidebar = "tab"` — so a
-per-tab sidebar follows the workspace whose tab you are in, both on entering a workspace and on focusing its terminal.
+Entering a workspace chdirs tab-local (`tcd`), and `DirChanged` fires with tab
+scope. Cwd-following plugins should watch the tab scope instead, so a per-tab sidebar follows the workspace whose tab
+you are in, both on entering a workspace and on focusing its terminal. For neo-tree:
+
+```lua
+require("neo-tree").setup({
+  filesystem = {
+    cwd_target = {
+      sidebar = "tab",
+    },
+  },
+})
+```
 
 ## Development
 
