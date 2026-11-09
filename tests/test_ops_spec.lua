@@ -149,7 +149,7 @@ else
     eq(fresh.get().terminal.size, 0.25, "fresh setup overrides terminal.size")
     eq(fresh.get().terminal.keep_on_exit, true, "fresh setup keeps terminal.keep_on_exit default")
     eq(fresh.get().pj, "pj", "fresh setup keeps default pj")
-    eq(fresh.get().dir_change_scope, "cd", "fresh setup keeps default dir_change_scope")
+    eq(fresh.get().dir_change_scope, nil, "dir_change_scope removed: tabs force tcd")
   end)
 
   test("run_pj returns ok result with empty stderr on success", function()

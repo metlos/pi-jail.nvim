@@ -4,9 +4,6 @@ local M = {}
 
 local defaults = {
   pj = "pj",
-  -- "cd" (global, so cwd-bound plugins like a neo-tree sidebar follow along)
-  -- or "tcd" (tab-local, so other tabs keep their cwd).
-  dir_change_scope = "cd",
   terminal = {
     keep_on_exit = true,
     size = 0.4,

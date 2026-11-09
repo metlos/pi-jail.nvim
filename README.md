@@ -5,9 +5,9 @@ Neovim plugin for pi-jail repositories: jj repos adopted by `pj`, where every wo
 
 It gives you:
 
-- `:Pj [ws]` — enter a workspace: change the cwd to `ws/<name>` and open the pi coding agent there in a persistent
-  terminal (reused across invocations, one per workspace).
-- `:Pj debug` — a jail shell (`pj debug`) for the workspace your buffer is in.
+- `:Pj [ws]` — enter a workspace: opens it in its own named tab (label `ws/<name>`) with the pi coding agent in a
+  persistent terminal inside it (reused across invocations, one per workspace). Closing the tab keeps the agent alive;
+  a later `:Pj open` re-attaches it in a fresh tab.
 - `:Pj new` / `:Pj fill` / `:Pj drop` — thin, confirmed wrappers around the matching `pj` commands.
 
 ## Requirements
@@ -43,24 +43,23 @@ Workspace arguments use the `ws/<name>` form, matching `pj`'s shell completion (
 itself, the plugin does not accept the bare `name` form — anything else is rejected with an error notification before
 anything runs.
 
-| Command              | Action                                                              |
-| -------------------- | ------------------------------------------------------------------- |
-| `:Pj`                | Pick a workspace (`vim.ui.select`, dirty ones shown as `ws/name *`) |
-| `:Pj open [ws/name]` | Enter workspace `ws/name` (picker when omitted)                     |
-| `:Pj new [ws/name]`  | `pj new` — create a workspace (prompt for the id when omitted)      |
-| `:Pj drop [ws/name]` | `pj drop` with confirm; offers `--force` on unlanded work           |
-| `:Pj fill [ws/name]` | `pj fill` for the buffer's workspace (picker fallback)              |
-| `:Pj debug`          | Jail shell for the buffer's workspace (picker fallback)             |
+| Command              | Action                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `:Pj`                | Pick a workspace (`vim.ui.select`, dirty ones as `ws/name *`, open ones as `ws/name [tab]`) |
+| `:Pj open [ws/name]` | Enter workspace `ws/name` (picker when omitted)                                             |
+| `:Pj new [ws/name]`  | `pj new` — create the workspace and open its tab (prompt for the id when omitted)           |
+| `:Pj drop [ws/name]` | `pj drop` with confirm; offers `--force` on unlanded work                                   |
+| `:Pj fill [ws/name]` | `pj fill` for the buffer's workspace (picker fallback)                                      |
 
 Details:
 
-- **Enter** (`:Pj`, `:Pj open`): change the working directory into `ws/<name>` first, then open/reuse the workspace's
-  agent terminal (`pj open`). `ws/<name>` is a normal terminal buffer; the agent keeps running while you edit in other
-  splits.
-- **Focus-follow**: focusing a workspace terminal's split chdirs back into that workspace (same scope as Enter), so a
-  cwd-bound sidebar always reflects the workspace you are looking at. Focusing the dead-but-kept terminal of an exited
-  agent still follows; focusing away from a terminal never changes the cwd.
-- **New** creates the workspace only: no chdir, no agent start.
+- **Enter** (`:Pj`, `:Pj open`): open (or switch to) the workspace's own tab — labeled `ws/<name>` — and open/reuse
+  its agent terminal (`pj open`) there. No global `cd` happens: each workspace tab carries its own tab-local cwd
+  (`tcd` into `ws/<name>`), so every other tab keeps its cwd. Focusing a workspace terminal (also across tab
+  switches) tcd's that tab into the workspace, so cwd-bound sidebars follow the terminal you are looking at.
+  Focusing the dead-but-kept terminal of an exited agent still follows; focusing away from a terminal never changes
+  the cwd.
+- **New** creates the workspace, then opens its tab (prompts for the id when omitted).
 - **Drop** always confirms (`Drop ws/<name>?`). If `pj drop` reports unlanded work, a second confirm offers `--force`.
   Success and failure are surfaced with `vim.notify` (failure shows pj's stderr verbatim).
 
@@ -71,7 +70,6 @@ Defaults:
 ```lua
 require("pi-jail").setup({
   pj = "pj", -- pj executable (name on PATH, or an absolute path)
-  dir_change_scope = "cd", -- ":cd" (global) or ":tcd" (tab-local) when entering a ws
   terminal = {
     keep_on_exit = true, -- keep the split + buffer around after the agent exits
     size = 0.4, -- terminal column width as a fraction of &columns
@@ -81,16 +79,43 @@ require("pi-jail").setup({
 
 ## Terminal layout
 
-The first workspace terminal opens as a right-side vertical split sized by `terminal.size`. Every further terminal opens
-below the bottom-most one, so all terminals stack in a single right-side column of that width instead of tiling side by
-side. Closing a terminal's split and reopening it later rejoins the column.
+Each workspace terminal lives in its own tab as a right-side vertical split sized by `terminal.size`. Re-entering a
+workspace whose terminal split was closed re-splits the same buffer in its tab.
+
+## Tabline
+
+At setup the plugin installs a minimal tabline showing workspace names — but only when `vim.o.tabline` is empty. A
+tabline plugin takes over that option instead, so every workspace tab also sets the tab-local variables `t:tabname`
+(lualine's convention) and `t:name` (bufferline's rename convention) to the workspace id, next to our own
+`t:pi_jail_name`.
+
+Support matrix:
+
+- **lualine** — works out of the box: its `tabs` component reads `t:tabname`, so jail tabs are labeled `ws/<name>`.
+- **tabby** — auto-integrated when installed: names are pushed into its `tabby.feature.tab_name` module.
+- **bufferline** — not automatic in `mode = "tabs"`: its tab labels come from the active buffer, not `t:name`. Use
+  `name_formatter` reading `t:pi_jail_name`:
+
+```lua
+require("bufferline").setup({
+  options = {
+    mode = "tabs",
+    name_formatter = function(opts)
+      local ok, name = pcall(vim.api.nvim_tabpage_get_var, opts.tabnr, "pi_jail_name")
+      return ok and name or nil
+    end,
+  },
+})
+```
+
+(Without the pcall, non-jail tabs would error bufferline into its fallback label; returning `nil` keeps their default
+name.)
 
 ## Plugin interop
 
-`dir_change_scope = "cd"` (the default) makes cwd-following plugins follow along automatically: the `:cd` fires
-`DirChanged global`, which e.g. a neo-tree sidebar with `bind_to_cwd = true` listens to — both when entering a workspace
-and when focusing its terminal. Use `"tcd"` if you want other tabs to keep their cwd — then configure such plugins to
-watch the tab scope instead (neo-tree: `cwd_target.sidebar = "tab"`).
+Entering a workspace no longer fires a global `:cd`: the chdir is tab-local (`tcd`), and `DirChanged` fires with tab
+scope. Cwd-following plugins should watch the tab scope instead — for neo-tree, `cwd_target.sidebar = "tab"` — so a
+per-tab sidebar follows the workspace whose tab you are in, both on entering a workspace and on focusing its terminal.
 
 ## Development
 

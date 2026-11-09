@@ -1,8 +1,8 @@
--- pi-jail.follow: focusing a workspace terminal chdirs into that workspace,
--- so cwd-bound sidebars (e.g. neo-tree) follow the terminal you are looking at.
--- Scope follows config.dir_change_scope: "cd" (global) or "tcd" (tab-local).
+-- pi-jail.follow: focusing a workspace terminal chdirs the CURRENT TAB into
+-- that workspace, so cwd-bound sidebars (e.g. neo-tree) follow the terminal
+-- you are looking at. Always tcd: each ws terminal owns its tab, so the
+-- chdir must stay tab-local; the global cwd is never touched.
 
-local config = require("pi-jail.config")
 local terminal = require("pi-jail.terminal")
 
 local M = {}
@@ -13,7 +13,7 @@ local GROUP = "pi-jail-follow"
 local function follow_entry(entry)
   local ws_dir = entry.root .. "/" .. entry.ws
   if vim.fn.getcwd() ~= ws_dir then
-    vim.cmd(config.get().dir_change_scope .. " " .. vim.fn.fnameescape(ws_dir))
+    vim.cmd("tcd " .. vim.fn.fnameescape(ws_dir))
   end
 end
 

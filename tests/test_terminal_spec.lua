@@ -1,5 +1,5 @@
 -- Spec for pi-jail.terminal (+ project.current_ws): per-ws agent terminal,
--- reuse across calls, exit handling, split width, terminal column stacking.
+-- one per tab, reuse across calls, exit handling, right-side split width.
 -- Signals failure via `vim.cmd("cq")` after counting failures; run.sh greps the exit code.
 
 local failures = 0
@@ -28,8 +28,14 @@ local function ok(cond, msg)
   if not cond then
     failures = failures + 1
     print("FAIL: " .. msg)
-  else
-    checks = checks + 1
+  end
+end
+
+local function ne(actual, expected, msg)
+  checks = checks + 1
+  if actual == expected then
+    failures = failures + 1
+    print(("FAIL: %s: expected something other than %q"):format(msg, tostring(expected)))
   end
 end
 
@@ -55,10 +61,9 @@ local function test(name, fn)
 end
 
 -- Fixture: fake pj executable + start-marker file + a repo root dir.
--- `pj open <id>` echoes "fake-agent <id>", `pj debug <id>` echoes
--- "fake-debug <id>"; both append "$PWD $1 $2" to the marker (one line per
--- spawned job, so the marker doubles as a spawn counter and argv/cwd record)
--- and sleep until killed.
+-- `pj open <id>` echoes "fake-agent <id>" and appends "$PWD $1 $2" to the
+-- marker (one line per spawned job, so the marker doubles as a spawn counter
+-- and argv/cwd record), then sleeps until killed.
 local fixture = nil
 local opened = {} -- every entry ever returned by open_or_reuse, for teardown
 
@@ -66,14 +71,14 @@ local function setup_fixture()
   local dir = "/tmp/pj-term-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
   os.execute("rm -rf " .. dir)
   os.execute("mkdir -p " .. dir .. "/root/ws " .. dir .. "/root/shared")
+  for _, name in ipairs({ "alpha", "gamma", "delta", "epsilon", "zeta" }) do
+    os.execute("mkdir -p " .. dir .. "/root/ws/" .. name)
+  end
   local script = dir .. "/pj"
   local h = io.open(script, "w")
   h:write(([[
 #!/bin/sh
-case "$1" in
-  open) echo "fake-agent $2" ;;
-  debug) echo "fake-debug $2" ;;
-esac
+echo "fake-agent $2"
 echo "$PWD $1 $2" >> "%s/marker"
 while :; do sleep 0.2; done
 ]]):format(dir))
@@ -139,6 +144,40 @@ local function kill_job(entry)
   os.execute("kill " .. vim.fn.jobpid(entry.job_id))
 end
 
+local function tab_wins_showing(tab, bufnr)
+  local wins = {}
+  if not vim.api.nvim_tabpage_is_valid(tab) then
+    return wins
+  end
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+    if vim.api.nvim_win_get_buf(w) == bufnr then
+      wins[#wins + 1] = w
+    end
+  end
+  return wins
+end
+
+-- Read a tabpage's local cwd; getcwd(-1, nr) takes a tabpage ORDINAL, not a
+-- handle, so read via a window of the tab to keep arbitrary handles valid.
+local function tab_cwd(tab)
+  local win = vim.api.nvim_tabpage_list_wins(tab)[1]
+  return vim.api.nvim_win_call(win, function()
+    return vim.fn.getcwd(0)
+  end)
+end
+
+-- Close the given tabpage safely: focus it, then close every window until the
+-- tab itself is gone (closing the last window auto-closes the tab).
+local function close_tab(tab)
+  if not vim.api.nvim_tabpage_is_valid(tab) then
+    return
+  end
+  vim.api.nvim_set_current_tabpage(tab)
+  while vim.api.nvim_tabpage_is_valid(tab) and #vim.api.nvim_tabpage_list_wins(tab) > 0 do
+    pcall(vim.api.nvim_win_close, vim.api.nvim_tabpage_list_wins(tab)[1], true)
+  end
+end
+
 print("=== test_terminal_spec: open_or_reuse + current_ws ===")
 
 local terminal, terminal_err = load_module("pi-jail.terminal")
@@ -163,150 +202,155 @@ else
   config.setup({ pj = fixture.script })
   local root = fixture.root
 
-  local alpha = terminal.open_or_reuse("ws/alpha", root)
-  opened[#opened + 1] = alpha
-  local opened_gamma = nil -- set in the width test; column tests read it
-  local opened_zeta = nil -- set in the second-terminal test; third-terminal test reads it
+  local global_cwd = vim.fn.getcwd(-1, -1)
+  local before_tabs = vim.api.nvim_get_current_tabpage() -- the initial tab 1
+  local ntabs = #vim.api.nvim_list_tabpages()
 
-  test("open_or_reuse creates a terminal buffer with a live job", function()
-    -- given a fresh workspace; when opened; then a terminal buffer with a running job exists
+  local alpha = terminal.open_or_reuse("ws/alpha", root)
+  table.insert(opened, alpha)
+
+  test("open_or_reuse creates a new tab with pi_jail_name, tcd and right-side terminal split", function()
+    -- given a fresh workspace; when opened; then a NEW tab exists carrying the
+    -- terminal buffer in a right-side vertical split, t:pi_jail_name set, and
+    -- the tab-local cwd pointing into the workspace dir
     ok(type(alpha) == "table", "open_or_reuse returns an entry table")
     ok(vim.api.nvim_buf_is_valid(alpha.bufnr), "entry.bufnr is a valid buffer")
     eq(vim.api.nvim_get_option_value("buftype", { buf = alpha.bufnr }), "terminal", "buftype=terminal")
     ok(alpha.job_id > 0, "entry.job_id is a real job handle")
     ok(job_alive(alpha.job_id), "job alive right after open")
     eq(alpha.ws, "ws/alpha", "entry carries the full ws id")
+    ok(alpha.tab ~= nil, "entry records its tabpage")
+    ok(vim.api.nvim_tabpage_is_valid(alpha.tab), "entry.tab is a valid tabpage")
+    eq(#vim.api.nvim_list_tabpages(), ntabs + 1, "a new tab was created for the ws terminal")
+    eq(vim.api.nvim_get_current_tabpage(), alpha.tab, "the new tab is current after open")
+    eq(vim.api.nvim_tabpage_get_var(alpha.tab, "pi_jail_name"), "ws/alpha", "t:pi_jail_name set to the ws id")
+    eq(vim.api.nvim_tabpage_get_var(alpha.tab, "tabname"), "ws/alpha", "t:tabname set for lualine's tabs component")
+    eq(vim.api.nvim_tabpage_get_var(alpha.tab, "name"), "ws/alpha", "t:name set for bufferline's rename convention")
+    eq(tab_cwd(alpha.tab), root .. "/ws/alpha", "tab-local cwd is the ws dir")
+    eq(vim.fn.getcwd(-1, -1), global_cwd, "global cwd untouched")
+    local wins = tab_wins_showing(alpha.tab, alpha.bufnr)
+    eq(#wins, 1, "terminal displayed in exactly one window of its tab")
+    eq(vim.api.nvim_win_get_width(wins[1]), 40, "width = floor(100 * 0.4 default size)")
+    eq(
+      vim.fn.win_screenpos(wins[1])[2] > vim.o.columns / 2,
+      true,
+      "terminal split sits on the right side of the tab"
+    )
   end)
 
-  test("open_or_reuse runs <pj> open <id> with cwd=root (default mode)", function()
+  test("open_or_reuse runs <pj> open <id> with cwd=root", function()
     ok(wait_for_marker(1), "fake pj wrote its start marker")
-    eq(marker_lines()[1], root .. " open ws/alpha", "marker records cwd, mode and ws id in order")
+    eq(marker_lines()[1], root .. " open ws/alpha", "marker records cwd, subcommand and ws id in order")
     ok(wait_buf_contains(alpha.bufnr, "fake-agent ws/alpha"), "terminal shows the agent banner")
   end)
 
-  test("second open_or_reuse for same ws reuses the same buffer and focuses its split", function()
+  test("second open_or_reuse for same ws reuses the same tab, buffer and job", function()
     -- given alpha's terminal is open with a live job; when opened again;
-    -- then the same buffer/job is reused and its split focused
+    -- then the same tab/buffer/job is reused, no new tab, no new marker line
     local again = terminal.open_or_reuse("ws/alpha", root)
-    opened[#opened + 1] = again
+    table.insert(opened, again)
     eq(again.bufnr, alpha.bufnr, "same buffer reused")
     eq(again.job_id, alpha.job_id, "same job reused")
-    eq(vim.api.nvim_win_get_buf(0), alpha.bufnr, "existing split focused")
-  end)
-
-  test("reuse does not spawn a second job", function()
+    eq(again.tab, alpha.tab, "same tabpage recorded")
+    eq(#vim.api.nvim_list_tabpages(), ntabs + 1, "no new tabpage created")
+    eq(vim.api.nvim_get_current_tabpage(), alpha.tab, "switched to alpha's tab")
+    eq(vim.api.nvim_win_get_buf(0), alpha.bufnr, "terminal window focused")
     vim.wait(300) -- give a hypothetical second spawn time to write its marker
     eq(#marker_lines(), 1, "marker still has exactly one start line")
     ok(job_alive(alpha.job_id), "original job still alive")
   end)
 
-  test("reuse focuses the existing split when another window is current", function()
-    -- given the terminal split exists but a different window is current
-    local term_win = vim.fn.win_findbuf(alpha.bufnr)[1]
-    local other_win = nil
-    for _, w in ipairs(vim.api.nvim_list_wins()) do
-      if w ~= term_win then
-        other_win = w
-      end
-    end
-    ok(other_win ~= nil, "a window outside the terminal split exists")
-    vim.api.nvim_set_current_win(other_win)
-    -- when opened again; then the terminal's split is focused, no new job
+  test("reuse from another tab switches back to the entry's tab and focuses the terminal", function()
+    -- given the caller sits on the initial tab (e.g. after opening a file);
+    -- when opened again; then the entry's tab becomes current and the terminal
+    -- window focused, still no new job
+    vim.api.nvim_set_current_tabpage(before_tabs)
     local again = terminal.open_or_reuse("ws/alpha", root)
-    opened[#opened + 1] = again
-    eq(again.bufnr, alpha.bufnr, "same buffer reused")
-    eq(vim.api.nvim_win_get_buf(0), alpha.bufnr, "terminal split focused from another window")
+    table.insert(opened, again)
+    eq(vim.api.nvim_get_current_tabpage(), alpha.tab, "switched back to alpha's tab")
+    eq(vim.api.nvim_win_get_buf(0), alpha.bufnr, "terminal window focused")
     eq(#marker_lines(), 1, "still exactly one job for alpha")
   end)
 
-  test("reuse reopens a split after the window was closed", function()
-    -- given alpha's split closed while the job keeps running
-    local wins = vim.fn.win_findbuf(alpha.bufnr)
+  test("reuse reopens the right-side split after the terminal window was closed", function()
+    -- given alpha's terminal window closed while the job keeps running;
+    -- when opened again; then the same buffer in a reopened right-side split
+    -- in the SAME tab, still one job
+    local wins = tab_wins_showing(alpha.tab, alpha.bufnr)
     vim.api.nvim_win_close(wins[1], true)
     eq(#vim.fn.win_findbuf(alpha.bufnr), 0, "window closed, buffer hidden")
-    -- when opened again; then same buffer in a reopened split, still one job
     local again = terminal.open_or_reuse("ws/alpha", root)
-    opened[#opened + 1] = again
+    table.insert(opened, again)
     eq(again.bufnr, alpha.bufnr, "same buffer reused after window close")
-    ok(#vim.fn.win_findbuf(alpha.bufnr) > 0, "split reopened for the terminal")
+    eq(vim.api.nvim_get_current_tabpage(), alpha.tab, "still alpha's tab")
+    local wins2 = tab_wins_showing(alpha.tab, alpha.bufnr)
+    eq(#wins2, 1, "split reopened for the terminal in its tab")
+    eq(vim.api.nvim_win_get_width(wins2[1]), 40, "reopened split keeps floor(columns*size) width")
     eq(vim.api.nvim_win_get_buf(0), alpha.bufnr, "reopened split focused")
     eq(#marker_lines(), 1, "still exactly one job for alpha")
   end)
 
-  test("mode 'debug' spawns <pj> debug <id>", function()
-    local dbg = terminal.open_or_reuse("ws/beta", root, "debug")
-    opened[#opened + 1] = dbg
+  local gamma = nil
+
+  test("two different workspaces get two separate tabs with their own names and cwds", function()
+    -- given alpha's tab exists; when another workspace opens; then it gets its
+    -- own new tab, its own t:pi_jail_name and tab-local cwd, and the global
+    -- cwd is untouched
+    local global_cwd = vim.fn.getcwd(-1, -1)
+    gamma = terminal.open_or_reuse("ws/gamma", root)
+    table.insert(opened, gamma)
+    ok(wait_for_marker(2), "gamma job started")
+    ok(vim.api.nvim_tabpage_is_valid(gamma.tab), "gamma tab valid")
+    ne(gamma.tab, alpha.tab, "gamma tab differs from alpha tab")
+    eq(#vim.api.nvim_list_tabpages(), ntabs + 2, "a second new tab was created")
+    eq(vim.api.nvim_get_current_tabpage(), gamma.tab, "switched to gamma's tab")
+    eq(vim.api.nvim_tabpage_get_var(gamma.tab, "pi_jail_name"), "ws/gamma", "gamma tab carries its own name")
+    eq(vim.api.nvim_tabpage_get_var(gamma.tab, "tabname"), "ws/gamma", "gamma t:tabname carries its own name")
+    eq(vim.api.nvim_tabpage_get_var(gamma.tab, "name"), "ws/gamma", "gamma t:name carries its own name")
+    eq(tab_cwd(gamma.tab), root .. "/ws/gamma", "gamma tab-local cwd is its ws dir")
+    eq(tab_cwd(alpha.tab), root .. "/ws/alpha", "alpha tab cwd unchanged")
+    eq(vim.fn.getcwd(-1, -1), global_cwd, "global cwd unchanged by tab opens")
+    -- switching between them via open_or_reuse changes the current tabpage
+    local again = terminal.open_or_reuse("ws/alpha", root)
+    table.insert(opened, again)
+    eq(vim.api.nvim_get_current_tabpage(), alpha.tab, "open_or_reuse switches back to alpha's tab")
+    local again2 = terminal.open_or_reuse("ws/gamma", root)
+    table.insert(opened, again2)
+    eq(vim.api.nvim_get_current_tabpage(), gamma.tab, "open_or_reuse switches to gamma's tab")
+    eq(#marker_lines(), 2, "still exactly two jobs (alpha + gamma)")
+  end)
+
+  test("closing the ws tab with job alive re-opens a NEW tab reusing the same buffer and job", function()
+    -- given gamma's tab closed by the user while the job lives; when opened
+    -- again; then a fresh tab (pi_jail_name + tcd) displays the SAME buffer
+    -- with the SAME job - no respawn
     local n0 = #marker_lines()
-    ok(wait_for_marker(n0 + 1), "debug job wrote its marker")
-    eq(marker_lines()[#marker_lines()], root .. " debug ws/beta", "marker records debug mode and ws id")
-    ok(wait_buf_contains(dbg.bufnr, "fake-debug ws/beta"), "terminal shows the debug banner")
-  end)
-
-  test("vertical split width is floor(columns * terminal.size)", function()
-    eq(vim.o.columns, 100, "columns still 100 for the width computation")
-    local e = terminal.open_or_reuse("ws/gamma", root)
-    opened[#opened + 1] = e
-    opened_gamma = e
-    local wins = vim.fn.win_findbuf(e.bufnr)
-    eq(#wins, 1, "terminal displayed in exactly one split")
-    eq(vim.api.nvim_win_get_width(wins[1]), 40, "width = floor(100 * 0.4 default size)")
-  end)
-
-  test("second terminal opens below the first, same column width", function()
-    -- given gamma's terminal open as a right-side vertical split; when a second
-    -- workspace terminal opens; then it splits below, not into a new vertical
-    local zeta = terminal.open_or_reuse("ws/zeta", root)
-    opened[#opened + 1] = zeta
-    opened_zeta = zeta
-    local gamma_wins = vim.fn.win_findbuf(opened_gamma.bufnr)
-    local zeta_wins = vim.fn.win_findbuf(zeta.bufnr)
-    eq(#zeta_wins, 1, "second terminal displayed in exactly one split")
-    eq(vim.api.nvim_win_get_width(zeta_wins[1]), 40, "second terminal keeps the column width")
-    eq(vim.api.nvim_win_get_width(gamma_wins[1]), 40, "first terminal keeps the column width")
-    ok(
-      vim.fn.win_screenpos(zeta_wins[1])[1] > vim.fn.win_screenpos(gamma_wins[1])[1],
-      "second terminal row below first terminal row"
-    )
-    ok(
-      math.abs(vim.fn.win_screenpos(zeta_wins[1])[2] - vim.fn.win_screenpos(gamma_wins[1])[2]) == 0,
-      "second terminal starts at the same column as the first"
-    )
-  end)
-
-  test("third terminal extends the column below", function()
-    local eta = terminal.open_or_reuse("ws/eta", root)
-    opened[#opened + 1] = eta
-    local g = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_gamma.bufnr)[1])
-    local z = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_zeta.bufnr)[1])
-    local e = vim.fn.win_screenpos(vim.fn.win_findbuf(eta.bufnr)[1])
-    ok(e[1] > z[1], "third terminal row below second")
-    ok(z[1] > g[1], "second terminal still below first")
-    eq(vim.api.nvim_win_get_width(vim.fn.win_findbuf(eta.bufnr)[1]), 40, "third terminal keeps the column width")
-  end)
-
-  test("reopened terminal split lands back in the column", function()
-    -- given zeta's window closed while gamma's and eta's remain; when zeta is
-    -- reopened; then its split joins the column instead of a new vertical split
-    local zeta_wins = vim.fn.win_findbuf(opened_zeta.bufnr)
-    vim.api.nvim_win_close(zeta_wins[1], true)
-    eq(#vim.fn.win_findbuf(opened_zeta.bufnr), 0, "zeta window closed, buffer hidden")
-    local again = terminal.open_or_reuse("ws/zeta", root)
-    eq(again.bufnr, opened_zeta.bufnr, "same buffer reused")
-    local w = vim.fn.win_findbuf(again.bufnr)[1]
-    eq(vim.api.nvim_win_get_width(w), 40, "reopened split keeps the column width")
-    local g = vim.fn.win_screenpos(vim.fn.win_findbuf(opened_gamma.bufnr)[1])
-    ok(vim.fn.win_screenpos(w)[1] > g[1], "reopened split below the column top")
+    local old_tab = gamma.tab
+    close_tab(gamma.tab)
+    ok(not vim.api.nvim_tabpage_is_valid(old_tab), "gamma tab closed")
+    ok(vim.api.nvim_buf_is_valid(gamma.bufnr), "buffer survived the tab close")
+    ok(job_alive(gamma.job_id), "job survived the tab close")
+    local again = terminal.open_or_reuse("ws/gamma", root)
+    table.insert(opened, again)
+    ok(vim.api.nvim_tabpage_is_valid(again.tab), "reopened tab valid")
+    ne(again.tab, old_tab, "a NEW tabpage was opened")
+    eq(vim.api.nvim_tabpage_get_var(again.tab, "pi_jail_name"), "ws/gamma", "new tab carries pi_jail_name")
+    eq(tab_cwd(again.tab), root .. "/ws/gamma", "new tab-local cwd is the ws dir")
+    eq(again.bufnr, gamma.bufnr, "SAME buffer reused, not respawned")
+    eq(again.job_id, gamma.job_id, "SAME job reused")
+    eq(#marker_lines(), n0, "marker count unchanged - no new spawn")
+    gamma = again
   end)
 
   local delta_entry = nil
 
-  test("keep_on_exit=false wipes buffer and split on job exit", function()
+  test("keep_on_exit=false wipes buffer and windows on job exit", function()
     -- given keep_on_exit=false and a running terminal; when the job is killed;
-    -- then the split is closed and the buffer wiped
+    -- then the windows are closed and the buffer wiped
     config.setup({ terminal = { keep_on_exit = false } })
     local n0 = #marker_lines()
     delta_entry = terminal.open_or_reuse("ws/delta", root)
-    opened[#opened + 1] = delta_entry
+    table.insert(opened, delta_entry)
     ok(wait_for_marker(n0 + 1), "delta job started")
     kill_job(delta_entry)
     local gone = vim.wait(3000, function()
@@ -314,14 +358,15 @@ else
     end, 50)
     ok(gone, "buffer wiped after job exit")
     local wins = vim.api.nvim_buf_is_valid(delta_entry.bufnr) and vim.fn.win_findbuf(delta_entry.bufnr) or {}
-    eq(#wins, 0, "no split left showing the buffer")
+    eq(#wins, 0, "no window left showing the buffer")
+    config.setup({ terminal = { keep_on_exit = true } })
   end)
 
   test("keep_on_exit=false starts a fresh terminal on next open after exit", function()
     config.setup({ terminal = { keep_on_exit = false } })
     local n0 = #marker_lines()
     local fresh = terminal.open_or_reuse("ws/delta", root)
-    opened[#opened + 1] = fresh
+    table.insert(opened, fresh)
     ok(wait_for_marker(n0 + 1), "a new job started for delta")
     ok(fresh.job_id ~= delta_entry.job_id, "new job, not the dead one")
     ok(vim.api.nvim_buf_is_valid(fresh.bufnr), "new buffer valid")
@@ -335,7 +380,7 @@ else
   test("keep_on_exit=true (default) keeps the buffer valid and displayed after job exit", function()
     local n0 = #marker_lines()
     eps_entry = terminal.open_or_reuse("ws/epsilon", root)
-    opened[#opened + 1] = eps_entry
+    table.insert(opened, eps_entry)
     ok(wait_for_marker(n0 + 1), "epsilon job started")
     kill_job(eps_entry)
     local dead = vim.wait(3000, function()
@@ -343,7 +388,7 @@ else
     end, 50)
     ok(dead, "job exited")
     ok(vim.api.nvim_buf_is_valid(eps_entry.bufnr), "buffer still valid")
-    ok(#vim.fn.win_findbuf(eps_entry.bufnr) > 0, "split still displays the buffer")
+    ok(#vim.fn.win_findbuf(eps_entry.bufnr) > 0, "a window still displays the buffer")
   end)
 
   test("dead terminal with keep_on_exit=true is reused, not respawned", function()
@@ -351,10 +396,24 @@ else
     -- when opened again; then the dead buffer is focused, no new job
     local n0 = #marker_lines()
     local again = terminal.open_or_reuse("ws/epsilon", root)
-    opened[#opened + 1] = again
+    table.insert(opened, again)
     eq(again.bufnr, eps_entry.bufnr, "same dead buffer reused")
     eq(#marker_lines(), n0, "no new job spawned")
-    eq(vim.api.nvim_win_get_buf(0), eps_entry.bufnr, "dead terminal's split focused")
+    eq(vim.api.nvim_win_get_buf(0), eps_entry.bufnr, "dead terminal's window focused")
+  end)
+
+  test("reopened ws tab carries the tabline-plugin name vars again", function()
+    -- given a ws tab closed while its job lives; when open_or_reuse reopens
+    -- it; then the fresh tab carries t:tabname/t:name like a first open
+    local old_tab = gamma.tab
+    close_tab(gamma.tab)
+    ok(not vim.api.nvim_tabpage_is_valid(old_tab), "gamma tab closed")
+    local again = terminal.open_or_reuse("ws/gamma", root)
+    table.insert(opened, again)
+    eq(vim.api.nvim_tabpage_get_var(again.tab, "pi_jail_name"), "ws/gamma", "reopened tab carries pi_jail_name")
+    eq(vim.api.nvim_tabpage_get_var(again.tab, "tabname"), "ws/gamma", "reopened tab carries t:tabname")
+    eq(vim.api.nvim_tabpage_get_var(again.tab, "name"), "ws/gamma", "reopened tab carries t:name")
+    gamma = again
   end)
 
   test("project.current_ws resolves the bare ws name from a buffer path", function()
@@ -375,6 +434,50 @@ else
     for _, c in ipairs(cases) do
       eq(project.current_ws(root, c[1]), c[2], ("current_ws(%s)"):format(c[1]))
     end
+  end)
+
+  -- Tabby integration: names are pushed into tabby's tab_name module when it
+  -- is installed (fake here), and a missing tabby is a silent no-op. Order
+  -- matters: the no-preload path runs first, then the fake is seeded for the
+  -- next open (package.loaded cache makes a later unload of the fake moot).
+  -- Gamma's tab was already opened above with no tabby present: no calls.
+
+  local fake_calls = {}
+  package.preload["tabby.feature.tab_name"] = function()
+    return { set = function(tab, name)
+      fake_calls[#fake_calls + 1] = { tab = tab, name = name }
+    end }
+  end
+
+  test("missing tabby is a no-op: opens before this point prove it", function()
+    -- gamma and the earlier ws all opened with no tabby installed; reaching
+    -- here without error IS the no-tabby contract
+    ok(job_alive(gamma.job_id), "gamma's no-tabby open survives")
+  end)
+
+  local tabby_ws = terminal.open_or_reuse("ws/zeta", root)
+  table.insert(opened, tabby_ws)
+
+  test("opening a ws with tabby present pushes (tab, ws) into tabby's tab_name module", function()
+    eq(#fake_calls, 1, "exactly one tabby set call")
+    eq(fake_calls[1].name, "ws/zeta", "tabby got the ws id")
+    ok(fake_calls[1].tab == tabby_ws.tab, "tabby got the new tabpage handle")
+  end)
+
+  test("reusing an already-open ws does not re-push the tabby name", function()
+    local again = terminal.open_or_reuse("ws/zeta", root)
+    table.insert(opened, again)
+    eq(#fake_calls, 1, "still exactly one tabby set call")
+    eq(again.tab, tabby_ws.tab, "same tab reused")
+  end)
+
+  test("reopened ws tab re-pushes the tabby name for the fresh tabpage", function()
+    close_tab(tabby_ws.tab)
+    local again = terminal.open_or_reuse("ws/zeta", root)
+    table.insert(opened, again)
+    eq(#fake_calls, 2, "a second set call for the reopened tab")
+    eq(fake_calls[2].name, "ws/zeta", "tabby got the ws id again")
+    ok(fake_calls[2].tab == again.tab, "tabby got the NEW tabpage handle")
   end)
 
   teardown_fixture()

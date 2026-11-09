@@ -1,7 +1,10 @@
 -- Spec for pi-jail.init: :Pj command dispatch + UX glue (picker, prompts,
--- confirms, notifications) on top of project/config/ops/terminal.
+-- confirms, notifications) on top of project/config/ops/terminal/tabline.
 -- Boundaries (find_root, list_workspaces, run_pj, open_or_reuse, vim.ui.*,
 -- vim.fn.confirm, vim.notify) are stubbed with programmatic versions.
+-- init no longer chdirs: the workspace tab created inside the (stubbed)
+-- terminal.open_or_reuse owns the cwd, so these tests assert the global cwd
+-- never moves.
 -- Signals failure via `vim.cmd("cq")` after counting failures; run.sh greps the exit code.
 
 local failures = 0
@@ -90,8 +93,8 @@ local function test(name, fn)
   end
 end
 
--- Fixture: fake adopted repo root with real workspace dirs (tcd + isdirectory
--- need them); every other boundary is stubbed.
+-- Fixture: fake adopted repo root with real workspace dirs (the isdirectory
+-- guard in enter_ws needs them); every other boundary is stubbed.
 local dir = "/tmp/pj-init-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
 os.execute("rm -rf " .. dir)
 os.execute(
@@ -121,6 +124,9 @@ else
   local ops = require("pi-jail.ops")
   local terminal = require("pi-jail.terminal")
   local config = require("pi-jail.config")
+  -- Prime package.loaded: init.setup requires tabline lazily, and by then
+  -- before_each has chdir'd nvim away from the repo (package.path is relative).
+  require("pi-jail.tabline")
 
   -- Saved originals for teardown.
   local saved = {
@@ -180,8 +186,8 @@ else
     return next_from(stub.pj_results, { ok = true, stdout = "", stderr = "", code = 0 })
   end
 
-  terminal.open_or_reuse = function(name, r, mode)
-    rec.open[#rec.open + 1] = { name = name, root = r, mode = mode }
+  terminal.open_or_reuse = function(name, r)
+    rec.open[#rec.open + 1] = { name = name, root = r }
   end
 
   vim.ui.select = function(items, opts, on_choice)
@@ -238,11 +244,13 @@ else
     stub.input_cancel = false
     stub.confirm_results = {}
     stub.pj_results = {}
-    -- Reset both cwd scopes so drift from a previous test cannot leak in.
-    -- dir_change_scope is NOT reset here: the default-scope test must observe
-    -- the real default, and the tcd test restores it itself.
+    -- Reset cwd so drift from a previous test cannot leak in.
     vim.cmd("tcd " .. vim.fn.fnameescape(root))
     vim.cmd("cd " .. vim.fn.fnameescape(root))
+    -- Strip any leftover pi_jail_name tab vars (picker-marker tests seed them).
+    for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+      pcall(vim.api.nvim_tabpage_del_var, tab, "pi_jail_name")
+    end
     set_current_buf_dir(root)
   end
 
@@ -255,10 +263,10 @@ else
       return
     end
     eq(cmds.Pj.nargs, "*", ":Pj takes any number of args")
-    eq_deep(cmds.Pj.complete("d", ":Pj d", 5), { "drop", "debug" }, "completing 'd' lists drop+debug")
+    eq_deep(cmds.Pj.complete("d", ":Pj d", 5), { "drop" }, "completing 'd' lists drop only")
     eq_deep(
       cmds.Pj.complete("", ":Pj ", 4),
-      { "open", "new", "drop", "fill", "debug" },
+      { "open", "new", "drop", "fill" },
       "completing '' lists all subcommands"
     )
     eq_deep(cmds.Pj.complete("zz", ":Pj zz", 5), {}, "unknown lead completes nothing")
@@ -266,26 +274,48 @@ else
   end)
 
   test("bare dispatch lists formatted workspaces in the picker", function()
-    -- given two workspaces (alpha clean, beta dirty); when :Pj runs bare;
-    -- then the picker shows them formatted "ws/name" / "ws/name *"
+    -- given two workspaces (alpha clean, beta dirty, neither with a tab);
+    -- when :Pj runs bare; then the picker shows "ws/name" / "ws/name *"
     init.run(nil, {})
     eq(#rec.select, 1, "picker opened once")
     eq_deep(rec.select[1].items, { "ws/alpha", "ws/beta *" }, "items formatted ws/name + dirty marker")
     eq(rec.select[1].prompt, "pi-jail workspace:", "picker prompt")
   end)
 
-  test("bare dispatch on_choice enters the workspace terminal", function()
-    -- given the picker offers ws/alpha; when chosen; then chdir + agent terminal
+  test("picker marks workspaces that already have a tab", function()
+    -- given the current tab is named ws/alpha; when the picker opens;
+    -- then alpha's item carries " [tab]" after the name and beta's does not
+    vim.api.nvim_tabpage_set_var(vim.api.nvim_get_current_tabpage(), "pi_jail_name", "ws/alpha")
+    init.run(nil, {})
+    eq_deep(
+      rec.select[1].items,
+      { "ws/alpha [tab]", "ws/beta *" },
+      "tab marker after the name, before the dirty marker"
+    )
+  end)
+
+  test("bare dispatch on_choice opens the workspace terminal", function()
+    -- given the picker offers ws/alpha; when chosen; then the terminal is
+    -- opened for it and init leaves the global cwd alone (the tab owns it)
     stub.select_choice = "ws/alpha"
     local cwd_before = vim.loop.cwd()
     init.run(nil, {})
     eq(#rec.find_root, 1, "root resolved once")
     eq(rec.find_root[1], cwd_before, "find_root called with the cwd at dispatch time")
-    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "entering changed the window cwd into ws/alpha")
     eq(#rec.open, 1, "terminal opened once")
     eq(rec.open[1].name, "ws/alpha", "terminal for the chosen ws")
     eq(rec.open[1].root, root, "terminal rooted at the repo root")
-    eq(rec.open[1].mode, "open", "agent mode")
+    eq(vim.fn.getcwd(-1, -1), root, "init did not chdir: global cwd stays at the root")
+  end)
+
+  test("choosing a marked item strips both markers before use", function()
+    -- given a picker item carries both markers; when chosen; then enter_ws
+    -- receives the bare ws id
+    stub.select_choice = "ws/beta [tab] *"
+    init.run(nil, {})
+    eq(#rec.open, 1, "terminal opened once")
+    eq(rec.open[1].name, "ws/beta", "tab and dirty markers stripped from the choice")
+    eq(rec.open[1].root, root, "terminal rooted at the repo root")
   end)
 
   test(":Pj command routes a bare invocation through the dispatch", function()
@@ -297,17 +327,16 @@ else
   test(":Pj open <ws/name> enters that workspace without the picker", function()
     init.run("open", { "ws/beta" })
     eq(#rec.select, 0, "no picker for an explicit ws id")
-    eq(vim.fn.getcwd(0), root .. "/ws/beta", "cwd into ws/beta")
     eq(#rec.open, 1, "terminal opened once")
     eq(rec.open[1].name, "ws/beta", "terminal for ws/beta")
-    eq(rec.open[1].mode, "open", "agent mode")
+    eq(rec.open[1].root, root, "terminal rooted at the repo root")
+    eq(vim.fn.getcwd(-1, -1), root, "init did not chdir: global cwd stays at the root")
   end)
 
   test(":Pj command parses 'open ws/beta' into subcommand + args", function()
     vim.api.nvim_command("Pj open ws/beta")
     eq(#rec.select, 0, "no picker")
     eq(rec.open[1].name, "ws/beta", "arg routed to the open handler")
-    eq(vim.fn.getcwd(0), root .. "/ws/beta", "cwd into ws/beta")
   end)
 
   test(":Pj open without a ws id falls back to the picker", function()
@@ -339,37 +368,33 @@ else
     end
   end)
 
-  test("default dir_change_scope=cd sets the global cwd", function()
-    -- given untouched config; when entering a workspace; then the global cwd
-    -- changes (window-local follows)
-    init.run("open", { "ws/alpha" })
-    eq(vim.fn.getcwd(-1, -1), root .. "/ws/alpha", "global cwd changed into ws/alpha")
-    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "window cwd follows the global one")
-  end)
-
-  test("dir_change_scope=tcd sets only the tab-local cwd", function()
-    -- given dir_change_scope=tcd set after init was already required; when
-    -- entering a workspace; then the tab cwd changes but the global cwd stays
-    -- untouched (also proves the scope is read at call time, not cached)
-    config.setup({ dir_change_scope = "tcd" })
-    init.run("open", { "ws/beta" })
-    eq(vim.fn.getcwd(-1, -1), root, "global cwd unchanged")
-    eq(vim.fn.getcwd(0), root .. "/ws/beta", "tab cwd changed into ws/beta")
-    config.setup({ dir_change_scope = "cd" }) -- restore the default
-  end)
-
-  test(":Pj new with a ws id creates the workspace only", function()
-    -- given an explicit ws id; when :Pj new runs; then pj new is called with
-    -- no chdir and no agent start (create only)
+  test(":Pj new with a ws id creates the workspace, then opens it", function()
+    -- given an explicit ws id; when :Pj new runs; then pj new is called and
+    -- the fresh workspace is entered (terminal opened, no global chdir)
     init.run("new", { "ws/gamma" })
     eq(#rec.pj, 1, "one pj call")
     eq_deep(rec.pj[1].args, { "new", "ws/gamma" }, "pj new ws/gamma")
     eq(rec.pj[1].root, root, "pj run at the repo root")
     eq(#rec.select + #rec.input, 0, "no picker or prompt with an explicit ws id")
-    eq(#rec.open, 0, "no agent terminal started")
-    eq(vim.fn.getcwd(0), root, "no chdir")
     eq(rec.notify[1].msg, "pj new ws/gamma", "success notification")
     eq(rec.notify[1].level, vim.log.levels.INFO, "success at INFO")
+    eq(#rec.notify, 1, "no further notification")
+    eq(#rec.open, 1, "terminal opened for the fresh ws (create-then-open)")
+    eq(rec.open[1].name, "ws/gamma", "terminal for ws/gamma")
+    eq(rec.open[1].root, root, "terminal rooted at the repo root")
+    eq(vim.fn.getcwd(-1, -1), root, "init did not chdir: global cwd stays at the root")
+  end)
+
+  test(":Pj new failure notifies stderr and opens nothing", function()
+    -- given pj new fails; when :Pj new runs; then stderr is notified at ERROR
+    -- and no terminal is opened, no chdir happens
+    stub.pj_results = { { ok = false, stdout = "", stderr = "pj: name taken\n", code = 1 } }
+    init.run("new", { "ws/gamma" })
+    eq(#rec.pj, 1, "one pj call")
+    eq(rec.notify[1].msg, "pj: name taken\n", "stderr verbatim")
+    eq(rec.notify[1].level, vim.log.levels.ERROR, "failure at ERROR")
+    eq(#rec.open, 0, "no terminal on failure")
+    eq(vim.fn.getcwd(-1, -1), root, "no chdir on failure")
   end)
 
   test(":Pj new without a ws id prompts for one", function()
@@ -382,6 +407,7 @@ else
     )
     eq_deep(rec.pj[1].args, { "new", "ws/gamma" }, "entered ws id used")
     eq(rec.notify[1].msg, "pj new ws/gamma", "success notification")
+    eq(rec.open[1].name, "ws/gamma", "fresh ws entered after the prompt too")
   end)
 
   test(":Pj new input cancelled runs nothing", function()
@@ -398,13 +424,6 @@ else
     eq(#rec.notify, 1, "one notification")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
     ok(rec.notify[1].msg:find("gamma", 1, true) ~= nil, "message names the input")
-  end)
-
-  test(":Pj new failure notifies stderr verbatim at ERROR", function()
-    stub.pj_results = { { ok = false, stdout = "", stderr = "pj: name taken\n", code = 1 } }
-    init.run("new", { "ws/gamma" })
-    eq(rec.notify[1].msg, "pj: name taken\n", "stderr verbatim")
-    eq(rec.notify[1].level, vim.log.levels.ERROR, "failure at ERROR")
   end)
 
   test(":Pj drop picks, confirms, then drops", function()
@@ -501,23 +520,6 @@ else
     eq_deep(rec.pj[1].args, { "fill", "ws/gamma" }, "explicit ws id wins")
   end)
 
-  test(":Pj debug opens the jail shell for the buffer's workspace", function()
-    set_current_buf_dir(root .. "/ws/alpha")
-    init.run("debug", {})
-    eq(#rec.select, 0, "no picker inside a ws")
-    eq(vim.fn.getcwd(0), root .. "/ws/alpha", "cwd into ws/alpha")
-    eq(rec.open[1].name, "ws/alpha", "terminal for ws/alpha")
-    eq(rec.open[1].mode, "debug", "debug mode")
-  end)
-
-  test(":Pj debug falls back to the picker outside a ws", function()
-    set_current_buf_dir(root)
-    stub.select_choice = "ws/alpha"
-    init.run("debug", {})
-    eq(#rec.select, 1, "picker opened")
-    eq(rec.open[1].mode, "debug", "debug mode after choosing")
-  end)
-
   test("unknown subcommand notifies an error", function()
     init.run("bogus", {})
     eq(#rec.pj + #rec.open, 0, "nothing ran")
@@ -535,9 +537,11 @@ else
   end)
 
   test(":Pj open with an unknown name notifies and opens nothing", function()
+    -- given the ws dir does not exist on disk; when :Pj open names it;
+    -- then the isdirectory guard notifies at ERROR and no terminal opens
     init.run("open", { "ws/nope" })
     eq(#rec.open, 0, "no terminal for an unknown ws")
-    eq(vim.fn.getcwd(0), root, "cwd unchanged")
+    eq(vim.fn.getcwd(-1, -1), root, "cwd unchanged")
     eq(rec.notify[1].level, vim.log.levels.ERROR, "at ERROR")
   end)
 
@@ -559,7 +563,7 @@ else
     stub.select_cancel = true
     init.run(nil, {})
     eq(#rec.open + #rec.pj, 0, "nothing opened or run")
-    eq(vim.fn.getcwd(0), root, "cwd unchanged")
+    eq(vim.fn.getcwd(-1, -1), root, "cwd unchanged")
   end)
 
   test("setup forwards opts to config", function()
@@ -567,11 +571,18 @@ else
     eq(require("pi-jail.config").get().pj, "/custom/pj", "config.setup called with opts")
   end)
 
-  test("setup registers the focus-follow BufEnter autocmd", function()
-    -- given the follow group cleared; when setup runs;
+  test("setup installs the tabline and the focus-follow autocmd", function()
+    -- given an empty tabline option and no follow group; when setup runs;
+    -- then the tabline expression is installed and the group holds exactly
+    -- one BufEnter autocmd
+    vim.o.tabline = ""
     pcall(vim.api.nvim_del_augroup_by_name, "pi-jail-follow") -- absent until first setup
     init.setup({})
-    -- then the group holds exactly one BufEnter autocmd
+    eq(
+      vim.o.tabline,
+      "%{v:lua.require('pi-jail.tabline').render()}",
+      "tabline option holds the render expression"
+    )
     local cmds = vim.api.nvim_get_autocmds({ group = "pi-jail-follow" })
     eq(#cmds, 1, "setup registered one BufEnter autocmd")
     eq(cmds[1].event, "BufEnter", "listening on BufEnter")
@@ -586,6 +597,10 @@ else
   vim.ui.input = saved.input
   vim.fn.confirm = saved.confirm
   vim.notify = saved.notify
+  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+    pcall(vim.api.nvim_tabpage_del_var, tab, "pi_jail_name")
+  end
+  vim.o.tabline = ""
   os.execute("rm -rf " .. dir)
 end
 

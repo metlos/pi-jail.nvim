@@ -1,5 +1,6 @@
 -- Spec for pi-jail.follow (+ terminal.entry_for_buf): focusing a workspace's
--- terminal buffer chdirs into that workspace, honoring config.dir_change_scope.
+-- terminal buffer chdirs the CURRENT TAB into that workspace (always tcd, the
+-- tab model forces it); the global cwd is never touched.
 -- Signals failure via `vim.cmd("cq")` after counting failures; run.sh greps the exit code.
 
 local failures = 0
@@ -27,9 +28,8 @@ local function ok(cond, msg)
   if not cond then
     failures = failures + 1
     print("FAIL: " .. msg)
-  else
-    checks = checks + 1
   end
+  checks = checks + 1
 end
 
 -- Set up module resolution under -u NONE.
@@ -103,7 +103,16 @@ local function focus(bufnr)
   vim.cmd("buffer " .. bufnr)
 end
 
-print("=== test_follow_spec: focus-follow chdir ===")
+-- Read a tabpage's local cwd; getcwd(-1, nr) takes a tabpage ORDINAL, not a
+-- handle, so read via a window of the tab to keep arbitrary handles valid.
+local function tab_cwd(tab)
+  local win = vim.api.nvim_tabpage_list_wins(tab)[1]
+  return vim.api.nvim_win_call(win, function()
+    return vim.fn.getcwd(0)
+  end)
+end
+
+print("=== test_follow_spec: focus-follow tab-local chdir ===")
 
 local terminal, terminal_err = load_module("pi-jail.terminal")
 local config, config_err = load_module("pi-jail.config")
@@ -125,6 +134,7 @@ if follow == nil or terminal == nil or config == nil then
 else
   setup_fixture()
   config.setup({ pj = fixture.script, terminal = { keep_on_exit = true } })
+  follow.setup()
   detour_buf = vim.api.nvim_create_buf(false, true)
   local root = fixture.root
   local alpha_dir = root .. "/ws/alpha"
@@ -154,24 +164,32 @@ else
     eq(terminal.entry_for_buf(scratch), nil, "unknown buffer maps to nil")
   end)
 
-  test("spawning alone does not chdir; focusing the terminal does (cd scope)", function()
-    -- given the terminal spawned and cwd still at root;
+  test("focusing a ws terminal chdirs the current tab, not the global cwd", function()
+    -- given the global cwd at root and alpha's terminal spawned (its tab is
+    -- current and cwd already root via new_ws_tab's tcd);
     vim.cmd("cd " .. vim.fn.fnameescape(root))
-    eq(vim.fn.getcwd(), root, "cwd unchanged by the spawn itself")
-    -- when the terminal buffer gains focus; then cwd moves into the workspace
+    local tab = vim.api.nvim_get_current_tabpage()
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd at root")
+    -- when the terminal buffer gains focus; then the TAB's cwd moves into the
+    -- workspace while the global cwd stays at root
     focus(alpha.bufnr)
-    eq(vim.fn.getcwd(), alpha_dir, "focusing alpha's terminal chdirs into ws/alpha")
+    eq(vim.fn.getcwd(), alpha_dir, "current tab's cwd is ws/alpha after focusing")
+    eq(tab_cwd(tab), alpha_dir, "the tab's local cwd is ws/alpha")
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd still root (tcd, never cd)")
   end)
 
   test("focusing a non-terminal buffer leaves the cwd alone", function()
-    -- given cwd is alpha's ws; when a scratch buffer gains focus; then no chdir
+    -- given the current tab's cwd is alpha's ws; when a scratch buffer gains
+    -- focus; then no chdir
     local scratch = vim.api.nvim_create_buf(false, true)
     focus(scratch)
     eq(vim.fn.getcwd(), alpha_dir, "scratch focus does not chdir")
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd still root")
   end)
 
   test("no DirChanged fires when the cwd already matches the workspace", function()
-    -- given cwd already alpha's ws; when focus leaves and returns;
+    -- given the current tab's cwd already alpha's ws; when focus leaves and
+    -- returns; then no chdir happened at all
     vim.api.nvim_clear_autocmds({ event = "DirChanged" })
     local fired = 0
     vim.api.nvim_create_autocmd("DirChanged", {
@@ -185,54 +203,69 @@ else
     -- then no chdir happened at all
     eq(fired, 0, "redundant chdir skipped by the getcwd guard")
     eq(vim.fn.getcwd(), alpha_dir, "cwd still alpha's ws")
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd still root")
   end)
 
-  local dbg = nil
+  local beta = nil
 
-  test("focus-follow also applies to debug terminals", function()
-    -- given a debug terminal for beta and cwd at root;
-    vim.cmd("cd " .. vim.fn.fnameescape(root))
-    dbg = terminal.open_or_reuse("ws/beta", root, "debug")
-    opened[#opened + 1] = dbg
-    -- when its buffer gains focus; then cwd moves into beta's ws
-    focus(dbg.bufnr)
-    eq(vim.fn.getcwd(), beta_dir, "focusing beta's debug terminal chdirs into ws/beta")
-  end)
-
-  test("dead-but-kept terminal still chdirs on focus", function()
-    -- given alpha's job exited while keep_on_exit=true kept the buffer;
-    os.execute("kill " .. vim.fn.jobpid(alpha.job_id))
-    ok(vim.wait(3000, function()
-      return not job_alive(alpha.job_id)
-    end, 50), "alpha's job exited")
-    ok(vim.api.nvim_buf_is_valid(alpha.bufnr), "buffer still valid (kept)")
-    vim.cmd("cd " .. vim.fn.fnameescape(root))
-    -- when the dead buffer gains focus; then cwd still moves into the ws
-    focus(alpha.bufnr)
-    eq(vim.fn.getcwd(), alpha_dir, "focusing a kept dead terminal chdirs into ws/alpha")
-  end)
-
-  test("tcd scope changes only the focused tab", function()
-    -- given tcd scope and a second tab inheriting the global cwd;
-    config.setup({ dir_change_scope = "tcd" })
+  test("two ws terminals in two tabs keep their own tab cwds, scope tabpage", function()
+    -- given alpha's terminal in its tab (tab cwd ws/alpha) and the global cwd
+    -- at root; when a second ws terminal opens in its own tab;
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd at root (precondition)")
+    beta = terminal.open_or_reuse("ws/beta", root)
+    opened[#opened + 1] = beta
+    eq(vim.api.nvim_get_current_tabpage(), beta.tab, "beta's tab is current after open")
+    -- park beta's tab at root so focusing its terminal must actually chdir
+    -- (the spawn's tcd already put the tab at ws/beta; the getcwd guard
+    -- would rightly skip a redundant chdir otherwise)
+    vim.cmd("tcd " .. vim.fn.fnameescape(root))
     local scope_seen = nil
+    vim.api.nvim_clear_autocmds({ event = "DirChanged" })
     vim.api.nvim_create_autocmd("DirChanged", {
       callback = function()
         scope_seen = vim.v.event.scope
       end,
     })
-    vim.cmd("cd " .. vim.fn.fnameescape(root))
-    local tab1 = vim.api.nvim_get_current_tabpage()
-    focus(detour_buf) -- park tab1 on a non-terminal buffer: switching back must not re-trigger follow
-    vim.cmd("tabnew")
-    -- when the terminal buffer gains focus in that tab;
+    -- when beta's terminal is focused; then beta's tab chdirs (DirChanged
+    -- scope tabpage) and alpha's tab keeps its own cwd
+    focus(beta.bufnr)
+    eq(vim.fn.getcwd(), beta_dir, "beta's tab cwd is ws/beta after focusing")
+    eq(scope_seen, "tabpage", "DirChanged fired with tabpage scope")
+    eq(tab_cwd(alpha.tab), alpha_dir, "alpha's tab still at ws/alpha")
+    -- when focus moves to alpha's terminal (tab switch + buffer switch),
+    -- alpha's tab parked at root the same way;
+    vim.api.nvim_set_current_tabpage(alpha.tab)
+    vim.cmd("tcd " .. vim.fn.fnameescape(root))
+    scope_seen = nil
+    vim.api.nvim_clear_autocmds({ event = "DirChanged" })
+    vim.api.nvim_create_autocmd("DirChanged", {
+      callback = function()
+        scope_seen = vim.v.event.scope
+      end,
+    })
     focus(alpha.bufnr)
-    -- then that tab's cwd is the ws, DirChanged fired tab-scoped, and the
-    -- first tab keeps the global cwd
-    eq(vim.fn.getcwd(), alpha_dir, "focused tab's cwd is ws/alpha")
-    eq(scope_seen, "tabpage", "DirChanged fired with tab scope")
-    vim.api.nvim_set_current_tabpage(tab1)
-    eq(vim.fn.getcwd(), root, "other tab's cwd unchanged")
+    -- then alpha's tab chdirs (scope tabpage) and beta's tab keeps its own
+    eq(vim.fn.getcwd(), alpha_dir, "alpha's tab cwd is ws/alpha after focusing")
+    eq(scope_seen, "tabpage", "DirChanged scope still tabpage")
+    eq(tab_cwd(beta.tab), beta_dir, "beta's tab still at ws/beta")
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd never moved off root")
+  end)
+
+  test("dead-but-kept terminal still chdirs on focus", function()
+    -- given alpha's job exited while keep_on_exit=true kept the buffer, and
+    -- its tab parked elsewhere;
+    os.execute("kill " .. vim.fn.jobpid(alpha.job_id))
+    ok(vim.wait(3000, function()
+      return not job_alive(alpha.job_id)
+    end, 50), "alpha's job exited")
+    ok(vim.api.nvim_buf_is_valid(alpha.bufnr), "buffer still valid (kept)")
+    -- when the dead buffer gains focus in a tab parked at root; then the tab
+    -- still chdirs into the ws
+    vim.api.nvim_set_current_tabpage(beta.tab)
+    vim.cmd("cd " .. vim.fn.fnameescape(root)) -- sets the GLOBAL cwd (tab has none)
+    focus(alpha.bufnr) -- switches buffer inside this tab: BufEnter must tcd
+    eq(vim.fn.getcwd(), alpha_dir, "focusing a kept dead terminal chdirs into ws/alpha")
+    eq(vim.fn.getcwd(-1, -1), root, "global cwd still root")
   end)
 
   teardown_fixture()
