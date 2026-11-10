@@ -11,6 +11,9 @@
 -- config.terminal.size. Reuse switches to the entry's tab and re-splits the
 -- same buffer if its window was closed; if the whole tab was closed by the
 -- user while the job lives, a fresh tab is opened for the same buffer/job.
+-- A fresh spawn also lands in a surviving tab named for the ws (the old
+-- terminal may have been cleaned up while its tab stayed open), else a new
+-- tab.
 local config = require("pi-jail.config")
 
 local M = {}
@@ -59,9 +62,22 @@ local function new_ws_tab(ws, root)
   return tab
 end
 
+-- Switch to the tabpage carrying t:pi_jail_name == ws, creating (and
+-- naming) a fresh one when no such tab survives.
+local function ensure_ws_tab(ws, root)
+  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+    local ok, name = pcall(vim.api.nvim_tabpage_get_var, tab, "pi_jail_name")
+    if ok and name == ws then
+      vim.api.nvim_set_current_tabpage(tab)
+      return tab
+    end
+  end
+  return new_ws_tab(ws, root)
+end
+
 local function spawn(ws, root)
   local bufnr = vim.api.nvim_create_buf(false, true)
-  local tab = new_ws_tab(ws, root)
+  local tab = ensure_ws_tab(ws, root)
   vim.api.nvim_set_current_win(open_split(bufnr))
   -- termopen attaches to the current buffer, which is bufnr in its new split.
   -- job_id is pre-declared so the on_exit closure captures the local, not a global.
@@ -120,11 +136,7 @@ function M.open_or_reuse(ws, root)
     if job_alive(entry.job_id) or config.get().terminal.keep_on_exit then
       -- Existing terminal (live, or dead-but-kept): switch to its tab (a new
       -- one if the user closed it) and focus (or reopen) its split.
-      if not vim.api.nvim_tabpage_is_valid(entry.tab) then
-        entry.tab = new_ws_tab(ws, entry.root)
-      else
-        vim.api.nvim_set_current_tabpage(entry.tab)
-      end
+      entry.tab = ensure_ws_tab(ws, entry.root)
       focus_in_current_tab(entry)
       return entry
     end

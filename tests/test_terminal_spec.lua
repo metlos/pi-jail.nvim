@@ -71,7 +71,7 @@ local function setup_fixture()
   local dir = "/tmp/pj-term-" .. tostring(vim.loop and vim.loop.os_getpid() or 0)
   os.execute("rm -rf " .. dir)
   os.execute("mkdir -p " .. dir .. "/root/ws " .. dir .. "/root/shared")
-  for _, name in ipairs({ "alpha", "gamma", "delta", "epsilon", "zeta" }) do
+  for _, name in ipairs({ "alpha", "gamma", "delta", "epsilon", "zeta", "omega" }) do
     os.execute("mkdir -p " .. dir .. "/root/ws/" .. name)
   end
   local script = dir .. "/pj"
@@ -372,6 +372,40 @@ else
     ok(vim.api.nvim_buf_is_valid(fresh.bufnr), "new buffer valid")
     ok(job_alive(fresh.job_id), "new job alive")
     eq(vim.api.nvim_get_option_value("buftype", { buf = fresh.bufnr }), "terminal", "new buffer is a terminal")
+    config.setup({ terminal = { keep_on_exit = true } })
+  end)
+
+  local omega_entry = nil
+
+  test("fresh terminal after cleanup reopens in the surviving tab, not a new one", function()
+    -- given omega's first terminal was cleaned up (keep_on_exit=false) while
+    -- its tab survives with its left window; when opened again; then the
+    -- fresh terminal spawns in the SAME surviving tab - no duplicate ws tab
+    config.setup({ terminal = { keep_on_exit = false } })
+    local n0 = #marker_lines()
+    omega_entry = terminal.open_or_reuse("ws/omega", root)
+    table.insert(opened, omega_entry)
+    ok(wait_for_marker(n0 + 1), "omega job started")
+    local first_tab = omega_entry.tab
+    kill_job(omega_entry)
+    ok(
+      vim.wait(3000, function()
+        return not vim.api.nvim_buf_is_valid(omega_entry.bufnr)
+      end, 50),
+      "buffer wiped after job exit"
+    )
+    ok(vim.api.nvim_tabpage_is_valid(first_tab), "omega tab survived the cleanup")
+    local tabs_before = #vim.api.nvim_list_tabpages()
+    local again = terminal.open_or_reuse("ws/omega", root)
+    table.insert(opened, again)
+    eq(again.tab, first_tab, "SAME tabpage reused for the fresh terminal")
+    eq(#vim.api.nvim_list_tabpages(), tabs_before, "no new tabpage created")
+    ne(again.job_id, omega_entry.job_id, "a fresh job was spawned")
+    ne(again.bufnr, omega_entry.bufnr, "a fresh buffer was created")
+    eq(vim.api.nvim_tabpage_get_var(again.tab, "pi_jail_name"), "ws/omega", "tab still carries its name")
+    local wins = tab_wins_showing(again.tab, again.bufnr)
+    eq(#wins, 1, "fresh terminal displayed in the surviving tab")
+    eq(vim.api.nvim_win_get_buf(0), again.bufnr, "fresh terminal window focused")
     config.setup({ terminal = { keep_on_exit = true } })
   end)
 

@@ -81,7 +81,9 @@ require("pi-jail").setup({
 ## Terminal layout
 
 Each workspace terminal lives in its own tab as a right-side vertical split sized by `terminal.size`. Re-entering a
-workspace whose terminal split was closed re-splits the same buffer in its tab.
+workspace whose terminal split was closed re-splits the same buffer in its tab. A workspace always reuses its
+surviving tab — one tab per workspace, even when its terminal was cleaned up — and only gets a new tab when you
+closed the old one.
 
 ## Tabline
 
